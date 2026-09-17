@@ -19,7 +19,7 @@ async def update_account(request: Request):
 @app.get("/", response_class=HTMLResponse)
 def home():
     if not accounts_data:
-        return "<html><body style='background:#000;color:#aaa;text-align:center;padding-top:100px;font-family:sans-serif;'><h2>💎 CRYSTAL CLASSIC PLUS</h2><p>Ожидание данных от MT5...</p></body></html>"
+        return "<html><body style='background:#000;color:#aaa;text-align:center;padding-top:100px;font-family:sans-serif;'><h2>💎 CRYSTAL CLASSIC PLUS</h2><p>Ожидание точных долларовых данных от MT5...</p></body></html>"
     
     html = """
     <html><head><meta charset='utf-8'>
@@ -87,7 +87,6 @@ def home():
         margin_level = int((usd_equity / raw_margin) * 100) if raw_margin > 0 else 0
         
         sush_on = int(info.get('sush_on', 1))
-        # СЧИТЫВАЕМ ЧЕСТНОЕ ЖИВОЕ КОЛИЧЕСТВО ОРДЕРОВ ПОРТФЕЛЯ ИЗ ТЕРМИНАЛА (РАВНО 61)
         total_account_orders = int(info.get('tot_orders', 61))
         
         p_today = float(info.get('p_today', 0.0)) / 100.0
@@ -102,10 +101,6 @@ def home():
 
         def sign(v): return f"+${v:.2f}" if v >= 0 else f"-${abs(v):.2f}"
         def col(v): return "#10b981" if v >= 0 else "#ef4444"
-
-        if dd_percent <= 2:     status_color = "#10b981"
-        elif dd_percent <= 10:  status_color = "#f59e0b"
-        else:                   status_color = "#ef4444"
 
         table_rows_html += f"""
         <tr><td style="color:#fff;">День</td><td style="color:{col(p_today)};">{sign(p_today)} (0.00%)</td><td style="color:#10b981;">+$1.90</td></tr>
@@ -134,8 +129,6 @@ def home():
         for pair, v in pairs.items():
             b_lot = float(v.get('buy', 0.0))
             s_lot = float(v.get('sell', 0.0))
-            
-            # СЧИТЫВАЕМ ЧЕСТНЫЕ ЖИВЫЕ КОЛЕНА ПАРЫ ИЗ МЕТАТРЕЙДЕРА
             b_count = int(v.get('buy_cnt', 0))
             s_count = int(v.get('sell_cnt', 0))
             
@@ -148,8 +141,9 @@ def home():
             
             pct_display = f"-{pair_dd_percent:.1f}%" if raw_pair_profit < 0 else (f"+{pair_dd_percent:.1f}%" if raw_pair_profit > 0 else "0.0%")
 
+            # Передаем data-pair для мгновенной JS-сортировки внутри телефона
             tiles_html += f"""
-                    <div class="tile {tile_class}">
+                    <div class="tile {tile_class}" data-pair="{pair.upper()}">
                         <span class="tile-name">{pair[:6]}</span>
                         <div class="tile-dir" style="color:{'#10b981' if b_lot > 0 else '#4b5563'}">▲ {b_lot:.2f} /{b_count}</div>
                         <div class="tile-dir" style="color:{'#ef4444' if s_lot > 0 else '#4b5563'}">▼ {s_lot:.2f} /{s_count}</div>
@@ -162,7 +156,6 @@ def home():
         html += f"""
         <div class="account-card" style="border-left: 5px solid {status_color};">
             <div class="card-header">
-                <!-- КРУЖОК ВЫВОДИТ ИДЕАЛЬНЫЕ 61 ИЗ ТЕРМИНАЛА -->
                 <div><b>KRYSTAL (CLASSIC +)</b> <span class="sush-badge" style="background:{sush_color};">{total_account_orders}</span></div>
                 <span class="broker-black">{info.get('company','Alpari')}</span>
             </div>
@@ -178,7 +171,7 @@ def home():
                 <div class="progress-work-text">${usd_in_work:,.2f}</div>
             </div>
             
-            <div class="tiles">
+            <div class="tiles" id="tiles_{login}">
                 {tiles_html}
             </div>
         </div>
@@ -209,6 +202,31 @@ def home():
     <script>
         function openPanel() {{ document.getElementById('sidePanel').classList.add('open'); }}
         function closePanel() {{ document.getElementById('sidePanel').classList.remove('open'); }}
+
+        // НАДЕЖНАЯ JS-СОРТИРОВКА ВНУТРИ АЙФОНА ПО ТВОЕМУ ПОРЯДКУ
+        document.addEventListener('DOMContentLoaded', () => {{
+            const desiredOrder = ["EURGBP", "EURUSD", "GBPUSD", "GBPCHF", "USDCAD"];
+            const containers = document.querySelectorAll('.tiles');
+            
+            containers.forEach(container => {{
+                const elements = Array.from(container.children);
+                elements.sort((a, b) => {{
+                    let nameA = a.getAttribute('data-pair') || "";
+                    let nameB = b.getAttribute('data-pair') || "";
+                    
+                    desiredOrder.forEach(p => {{
+                        if(nameA.includes(p)) nameA = p;
+                        if(nameB.includes(p)) nameB = p;
+                    }});
+                    
+                    let idxA = desiredOrder.indexOf(nameA);
+                    let idxB = desiredOrder.indexOf(nameB);
+                    
+                    return (idxA === -1 ? 999 : idxA) - (idxB === -1 ? 999 : idxB);
+                }});
+                elements.forEach(el => container.appendChild(el));
+            }});
+        }});
     </script>
     </body></html>
     """
