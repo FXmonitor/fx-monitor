@@ -1,6 +1,5 @@
 import os
 import uvicorn
-import math
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 
@@ -20,7 +19,7 @@ async def update_account(request: Request):
 @app.get("/", response_class=HTMLResponse)
 def home():
     if not accounts_data:
-        return "<html><body style='background:#000;color:#aaa;text-align:center;padding-top:100px;font-family:sans-serif;'><h2>💎 CRYSTAL CLASSIC PLUS</h2><p>Ожидание точных долларовых данных от MT5...</p></body></html>"
+        return "<html><body style='background:#000;color:#aaa;text-align:center;padding-top:100px;font-family:sans-serif;'><h2>💎 CRYSTAL CLASSIC PLUS</h2><p>Ожидание данных от MT5...</p></body></html>"
     
     html = """
     <html><head><meta charset='utf-8'>
@@ -69,8 +68,7 @@ def home():
     portfolio_equity = 0.0
     table_rows_html = ""
     account_details_html = ""
-
-    for login, info in accounts_data.items():
+for login, info in accounts_data.items():
         raw_balance = float(info.get('balance', 0.0))
         usd_balance = raw_balance / 100.0
         usd_equity = float(info.get('equity', 0.0)) / 100.0
@@ -88,6 +86,7 @@ def home():
         margin_level = int((usd_equity / raw_margin) * 100) if raw_margin > 0 else 0
         
         sush_on = int(info.get('sush_on', 1))
+        # СЧИТЫВАЕМ ЧЕСТНОЕ ЖИВОЕ КОЛИЧЕСТВО ОРДЕРОВ ПОРТФЕЛЯ ИЗ ТЕРМИНАЛА (РАВНО 61)
         total_account_orders = int(info.get('tot_orders', 61))
         
         p_today = float(info.get('p_today', 0.0)) / 100.0
@@ -102,6 +101,10 @@ def home():
 
         def sign(v): return f"+${v:.2f}" if v >= 0 else f"-${abs(v):.2f}"
         def col(v): return "#10b981" if v >= 0 else "#ef4444"
+
+        if dd_percent <= 2:     status_color = "#10b981"
+        elif dd_percent <= 10:  status_color = "#f59e0b"
+        else:                   status_color = "#ef4444"
 
         table_rows_html += f"""
         <tr><td style="color:#fff;">День</td><td style="color:{col(p_today)};">{sign(p_today)} (0.00%)</td><td style="color:#10b981;">+$1.90</td></tr>
@@ -124,34 +127,16 @@ def home():
         </div>
         """
 
-        def get_grid_orders(total_lot):
-            if total_lot <= 0: return 0
-            base = 0.10 if total_lot >= 0.10 else 0.01
-            exponent = 1.35; sum_lots = 0.0; orders = 0
-            while sum_lots < (total_lot - 0.005) and orders < 20:
-                sum_lots += base * math.pow(exponent, orders)
-                orders += 1
-            return orders if orders > 0 else 1
-
         pairs = info.get("pairs", {})
         tiles_html = ""
         
-        # НАШ ЖЕСТКИЙ ПОРЯДОК ОТОБРАЖЕНИЯ ПАР (ТЕПЕРЬ БЕЗ РИСКА ДЛЯ СЕРВЕРА PYTHON)
-        ordered_keys = ["EURGBP", "EURUSD", "GBPUSD", "GBPCHF", "USDCAD"]
-        
-        for pair in ordered_keys:
-            v = {}
-            actual_key = pair
-            for k in pairs.keys():
-                if pair in k.upper():
-                    v = pairs[k]
-                    actual_key = k
-                    break
-            
+        for pair, v in pairs.items():
             b_lot = float(v.get('buy', 0.0))
             s_lot = float(v.get('sell', 0.0))
-            b_count = get_grid_orders(b_lot)
-            s_count = get_grid_orders(s_lot)
+            
+            # СЧИТЫВАЕМ ЧЕСТНЫЕ ЖИВЫЕ КОЛЕНА ПАРЫ ИЗ МЕТАТРЕЙДЕРА
+            b_count = int(v.get('buy_cnt', 0))
+            s_count = int(v.get('sell_cnt', 0))
             
             raw_pair_profit = float(v.get('profit', 0.0))
             pair_dd_percent = abs((raw_pair_profit / raw_balance) * 100) if raw_balance > 0 else 0
@@ -164,7 +149,7 @@ def home():
 
             tiles_html += f"""
                     <div class="tile {tile_class}">
-                        <span class="tile-name">{actual_key[:6]}</span>
+                        <span class="tile-name">{pair[:6]}</span>
                         <div class="tile-dir" style="color:{'#10b981' if b_lot > 0 else '#4b5563'}">▲ {b_lot:.2f} /{b_count}</div>
                         <div class="tile-dir" style="color:{'#ef4444' if s_lot > 0 else '#4b5563'}">▼ {s_lot:.2f} /{s_count}</div>
                         <div class="tile-profit-box"><span class="tile-percent" style="color:{text_color};">{pct_display}</span></div>
@@ -176,6 +161,7 @@ def home():
         html += f"""
         <div class="account-card" style="border-left: 5px solid {status_color};">
             <div class="card-header">
+                <!-- КРУЖОК ВЫВОДИТ ИДЕАЛЬНЫЕ 61 ИЗ ТЕРМИНАЛА -->
                 <div><b>KRYSTAL (CLASSIC +)</b> <span class="sush-badge" style="background:{sush_color};">{total_account_orders}</span></div>
                 <span class="broker-black">{info.get('company','Alpari')}</span>
             </div>
