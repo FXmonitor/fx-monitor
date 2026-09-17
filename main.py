@@ -1,5 +1,6 @@
 import os
 import uvicorn
+import math
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 
@@ -55,7 +56,6 @@ def home():
         .label { font-size: 8px; color: #71717a; text-transform: uppercase; letter-spacing: 0.5px; }
         .val-big { font-size: 18px; font-weight: 900; color: #ffffff; }
         
-        /* Жесткая сетка на 5 колонок в один ряд */
         .tiles { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; width: 100%; box-sizing: border-box; }
         .tile { border-radius: 6px; padding: 4px; display: flex; flex-direction: column; justify-content: space-between; min-height: 85px; border: 1px solid rgba(255,255,255,0.02); text-align: left; box-sizing: border-box; overflow: hidden; }
         .tile-name { font-size: 10px; font-weight: 900; color: #fff; margin-bottom: 2px; text-align: center; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 2px; }
@@ -76,13 +76,11 @@ def home():
         usd_balance = raw_balance / 100.0
         usd_equity = float(info.get('equity', 0.0)) / 100.0
         
-        # Нагрузка = Баланс - Эквити
         usd_in_work = usd_balance - usd_equity
         if usd_in_work < 0: usd_in_work = 0.0
         
         dd_percent = (usd_in_work / usd_balance) * 100 if usd_balance > 0 else 0
         
-        # Перевод маржи из центов в USD
         raw_margin = float(info.get('margin', 0.0)) / 100.0
         margin_level = int((usd_equity / raw_margin) * 100) if raw_margin > 0 else 0
         
@@ -103,7 +101,6 @@ def home():
 
         html += f"""
         <div class="account-accordion" style="border-left: 5px solid {status_color};" onclick="toggleAccordion(event, {login})">
-            <!-- ШАПКА ВКЛАДКИ -->
             <div class="accordion-header">
                 <div class="acc-info">
                     <span class="acc-title">Crystal Classic Plus</span>
@@ -115,7 +112,6 @@ def home():
                 </div>
             </div>
             
-            <!-- СТРОКА В РАБОТЕ + ПРОЦЕНТ МАРЖИ -->
             <div class="work-line">
                 <div>
                     <span style="font-size:8px; color:#71717a; text-transform:uppercase; display:block; margin-bottom:1px;">В торговле</span>
@@ -127,7 +123,6 @@ def home():
                 </div>
             </div>
             
-            <!-- ФИНАНСОВЫЙ ОТЧЕТ -->
             <div class="profit-timeline">
                 <div class="profit-tab">
                     <span class="label" style="font-size:7px; color:#71717a;">Сегодня</span>
@@ -147,7 +142,6 @@ def home():
                 </div>
             </div>
             
-            <!-- РАСКРЫВАЮЩЕЕСЯ СОДЕРЖИМОЕ -->
             <div class="accordion-content" id="content_{login}" onclick="event.stopPropagation();">
                 <div class="grid">
                     <div><span class="label">Баланс счета</span><br><b class="val-big">${usd_balance:,.2f}</b></div>
@@ -159,25 +153,31 @@ def home():
         """
         
         for pair, v in info.get("pairs", {}).items():
-            b_lot = v.get('buy', 0.0)
-            s_lot = v.get('sell', 0.0)
-            raw_pair_profit = v.get('profit', 0.0)
+            b_lot = float(v.get('buy', 0.0))
+            s_lot = float(v.get('sell', 0.0))
+            raw_pair_profit = float(v.get('profit', 0.0))
             usd_pair_profit = raw_pair_profit / 100.0
             pair_dd_percent = abs((raw_pair_profit / raw_balance) * 100) if raw_balance > 0 else 0
             
-            if pair_dd_percent <= 2:
-                tile_class = "t-green"
-                text_color = "#10b981"
-            elif pair_dd_percent <= 10:
-                tile_class = "t-yellow"
-                text_color = "#f59e0b"
-            else:
-                tile_class = "t-red"
-                text_color = "#ef4444"
+            if pair_dd_percent <= 2:    tile_class = "t-green"; text_color = "#10b981"
+            elif pair_dd_percent <= 10: tile_class = "t-yellow"; text_color = "#f59e0b"
+            else:                       tile_class = "t-red"; text_color = "#ef4444"
             
-            # ВОЗВРАЩАЕМ РАСЧЕТ ИЗ ВЕРСИИ V7: Считаем колена на основе присланных лотов (лот * 10)
-            b_count = int(b_lot * 10) if b_lot > 0 else 0
-            s_count = int(s_lot * 10) if s_lot > 0 else 0
+            # УМНЫЙ АЛГОРИТМ ОПРЕДЕЛЕНИЯ КОЛЕН ПО СЕТУ EXPONENT = 1.35
+            # Автоматически определяет базовый лот брокера (0.01 или 0.10)
+            def calculate_orders(total_lot):
+                if total_lot <= 0: return 0
+                base = 0.10 if total_lot >= 0.10 else 0.01
+                exponent = 1.35
+                sum_lots = 0.0
+                orders = 0
+                while sum_lots < (total_lot - 0.005) and orders < 20:
+                    sum_lots += base * math.pow(exponent, orders)
+                    orders += 1
+                return orders if orders > 0 else 1
+
+            b_count = calculate_orders(b_lot)
+            s_count = calculate_orders(s_lot)
             
             pct_display = f"-{pair_dd_percent:.1f}%" if usd_pair_profit < 0 else (f"+{pair_dd_percent:.1f}%" if usd_pair_profit > 0 else "0.0%")
             prof_display = f"${usd_pair_profit:.1f}" if usd_pair_profit != 0 else "$0.0"
