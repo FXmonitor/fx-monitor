@@ -32,22 +32,15 @@ def home():
         .burger-btn { background: none; border: none; color: #3b82f6; font-size: 20px; cursor: pointer; padding: 0 4px; font-weight: 700; }
         .card-list { display: flex; flex-direction: column; gap: 10px; margin-top: 5px; }
         .account-card { background: #09090b; border-radius: 14px; border: 1px solid #1c1c1f; padding: 12px; position: relative; }
-        
-        /* СТИЛЬ ИДЕАЛЬНОГО ЗАГОЛОВКА */
         .card-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 2px; font-size: 11px; }
         .sush-badge { border-radius: 10px; padding: 2px 6px; font-size: 11px; font-weight: 900; color: #000; margin-left: 5px; display: inline-block; }
-        
         .broker-wrap-right { text-align: right; }
         .broker-black { color: #000000; font-weight: 700; font-size: 11px; text-transform: uppercase; background: #27272a; padding: 2px 6px; border-radius: 4px; display: inline-block; }
-        
-        /* КРУПНЫЙ ЖИРНЫЙ ДОХОД ДНЯ СТРОГО ПОД БРОКЕРОМ */
         .day-profit-under { font-size: 14px; font-weight: 900; margin-top: 5px; display: block; letter-spacing: -0.3px; }
-        
         .grid-main { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 8px; font-size: 13px; font-weight: 700; }
         .thick-progress-bar { width: 100%; height: 26px; background: #00a3ff; border-radius: 6px; overflow: hidden; margin: 10px 0; display: flex; position: relative; border: 1px solid #1c1c1f; }
         .progress-equity-fill { height: 100%; background: #2563eb; display: flex; align-items: center; padding-left: 8px; color: #000000; font-size: 11px; font-weight: 900; box-sizing: border-box; white-space: nowrap; overflow: hidden; }
         .progress-work-text { flex-grow: 1; display: flex; align-items: center; justify-content: flex-end; padding-right: 8px; color: #000000; font-size: 11px; font-weight: 900; white-space: nowrap; overflow: hidden; }
-        
         .tiles { display: grid; grid-template-columns: repeat(5, 1fr); gap: 3px; width: 100%; }
         .tile { border-radius: 6px; padding: 4px 2px; display: flex; flex-direction: column; justify-content: space-between; min-height: 85px; border: 1px solid rgba(255,255,255,0.02); text-align: left; box-sizing: border-box; }
         .tile-name { font-size: 10px; font-weight: 900; color: #fff; margin-bottom: 3px; text-align: center; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 1px; }
@@ -55,23 +48,28 @@ def home():
         .tile-profit-box { margin-top: auto; text-align: center; line-height: 1.1; padding-bottom: 2px; }
         .tile-percent { font-size: 12px; font-weight: 900; letter-spacing: -0.3px; }
         
-        /* СУПЕР-СЖАТАЯ ВЕРТИКАЛЬНАЯ ШТОРКА ДОХОДОВ */
+        /* ШТОРКА ДОХОДОВ */
         .side-panel { position: fixed; top: 0; right: -100%; width: 100%; height: 100%; background: #000000; z-index: 2000; transition: right 0.3s ease; padding: 12px; box-sizing: border-box; overflow-y: auto; }
         .side-panel.open { right: 0; }
         .panel-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #1c1c1f; padding-bottom: 8px; margin-bottom: 10px; }
         .panel-title { font-size: 13px; font-weight: 900; color: #fff; text-transform: uppercase; }
         .close-panel-btn { background: #141417; border: 1px solid #27272a; color: #ef4444; border-radius: 6px; padding: 4px 10px; font-size: 11px; font-weight: 700; cursor: pointer; }
-        
         .income-title { font-size: 11px; font-weight: 800; color: #fff; margin: 10px 0 4px 0; text-transform: uppercase; border-left: 3px solid #3b82f6; padding-left: 5px; }
-        .report-table { width: 100%; border-collapse: collapse; font-size: 12px; text-align: left; margin-bottom: 8px; }
-        .report-table th { color: #71717a; padding: 4px 2px; font-weight: 700; text-transform: uppercase; font-size: 9px; border-bottom: 1px solid #1c1c1f; }
-        .report-table td { padding: 5px 2px; border-bottom: 1px solid #0d0d11; font-weight: 600; }
+        
+        /* ГЛОБАЛЬНАЯ ВЕРХНЯЯ ТАБЛИЦА ПОРТФЕЛЯ (ОТСТУПЫ ПРЕЖНИЕ) */
+        .report-table-top { width: 100%; border-collapse: collapse; font-size: 12px; text-align: left; margin-bottom: 12px; }
+        .report-table-top th { color: #71717a; padding: 6px 2px; font-weight: 700; text-transform: uppercase; font-size: 9px; border-bottom: 1px solid #1c1c1f; }
+        .report-table-top td { padding: 8px 2px; border-bottom: 1px solid #0d0d11; font-weight: 600; }
         
         .roi-badge { background: #10b981; color: #000; padding: 2px 5px; border-radius: 4px; font-weight: 800; font-size: 10px; }
         .rom-badge { background: #3b82f6; color: #000; padding: 2px 5px; border-radius: 4px; font-weight: 800; font-size: 10px; }
-        
         .account-details-box { background: #09090b; border-radius: 12px; border: 1px solid #1c1c1f; padding: 8px; margin-bottom: 10px; }
         .roi-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 4px; font-size: 11px; margin-bottom: 4px; line-height: 1.2; }
+        
+        /* НОВАЯ НИЖНЯЯ ТАБЛИЦА СЧЕТА: ЖЕСТКОЕ СЖАТИЕ ПО ВЕРТИКАЛИ */
+        .report-table-bottom { width: 100%; border-collapse: collapse; font-size: 11px; text-align: left; margin-bottom: 0; line-height: 1.0; }
+        .report-table-bottom th { color: #71717a; padding: 2px 2px; font-weight: 700; text-transform: uppercase; font-size: 8.5px; border-bottom: 1px solid #1c1c1f; }
+        .report-table-bottom td { padding: 3px 2px; border-bottom: 1px solid #0d0d11; font-weight: 600; }
         
         .t-green { background: linear-gradient(135deg, #022c22, #050b08); border-left: 2px solid #10b981; }
         .t-yellow { background: linear-gradient(135deg, #4d330c, #0c0802); border-left: 2px solid #f59e0b; }
@@ -129,6 +127,7 @@ def home():
         elif dd_percent <= 10:  status_color = "#f59e0b"
         else:                   status_color = "#ef4444"
 
+        # Таблица верхнего портфеля (Оставляем те же широкие отступы)
         table_rows_html += f"""
         <tr><td style="color:#71717a;">день</td><td style="color:#fff; font-weight:800;">$0.00 <span style="font-size:10px; color:#71717a;">(0%)</span></td><td style="color:#10b981;">$1.90 <span style="font-size:10px;">(+0.28%)</span></td></tr>
         <tr><td style="color:#71717a;">неделя</td><td style="color:#10b981; font-weight:800;">$5.41 <span style="font-size:10px;">(+0.82%)</span></td><td style="color:#10b981;">$6.08 <span style="font-size:10px;">(+0.93%)</span></td></tr>
@@ -136,7 +135,7 @@ def home():
         <tr style="border-top:1px solid #1c1c1f;"><td style="color:#71717a; font-weight:800;">всего</td><td style="color:#10b981; font-weight:900; font-size:12px;">${calc_total_profit:.2f} <span style="font-size:10px;">(+11.55%)</span></td><td style="color:#71717a;">-</td></tr>
         """
         
-        # ТОТАЛЬНОЕ СЖАТИЕ ЛИЧНОЙ КАРТОЧКИ: ТАБЛИЦА СКЛЕЕНА С БЛОКОМ ROI ДЛЯ МАКСИМАЛЬНОЙ КОМПАКТНОСТИ
+        # ЛИЧНАЯ ТАБЛИЦА СЧЕТА С НОВЫМ ЖЕСТКИМ ВЕРТИКАЛЬНЫМ СЖАТИЕМ (КЛАСС report-table-bottom)
         account_details_html += f"""
         <div class="income-title">▼ Счёт: {login}</div>
         <div class="account-details-box">
@@ -150,12 +149,13 @@ def home():
                 <div>&nbsp;</div>
                 <div style="text-align:right;"><span class="rom-badge">ROM {calc_rom:.2f}%</span></div>
             </div>
-            <table class="report-table" style="margin-top:4px; border-top: 1px solid #1c1c1f; padding-top:4px; margin-bottom:0;">
+            <table class="report-table-bottom" style="margin-top:2px; border-top: 1px solid #1c1c1f; padding-top:2px;">
+                <thead><tr style="color:#71717a; font-size:8.5px;"><th>текущий</th><th>прошлый</th></tr></thead>
                 <tbody>
-                    <tr><td style="color:#71717a;">день</td><td style="color:#fff;">$0.00</td><td style="color:#10b981;">$1.90</td></tr>
-                    <tr><td style="color:#71717a;">неделя</td><td style="color:#10b981;">$5.41</td><td style="color:#10b981;">$6.08</td></tr>
-                    <tr><td style="color:#71717a;">месяц</td><td style="color:#10b981;">$20.80</td><td style="color:#10b981;">$40.55</td></tr>
-                    <tr style="border-top:1px solid #1c1c1f;"><td style="color:#71717a; font-weight:700;">всего счета</td><td style="color:#10b981; font-weight:800;">${calc_total_profit:.2f}</td><td style="color:#71717a;">-</td></tr>
+                    <tr><td style="color:#fff;">$0.00</td><td style="color:#10b981;">$1.90</td></tr>
+                    <tr><td style="color:#10b981;">$5.41</td><td style="color:#10b981;">$6.08</td></tr>
+                    <tr><td style="color:#10b981;">$20.80</td><td style="color:#10b981;">$40.55</td></tr>
+                    <tr style="border-top:1px solid #1c1c1f; font-weight:800;"><td style="color:#10b981;">${calc_total_profit:.2f}</td><td style="color:#71717a;">-</td></tr>
                 </tbody>
             </table>
         </div>
@@ -207,31 +207,24 @@ def home():
 
         sush_color = "#f59e0b" if sush_on == 1 else "#10b981"
 
-        # ОТРИСОВКА СЛОЯ 1: ЧИСТЫЙ КРУПНЫЙ ДОХОД ДНЯ ВЫВЕДЕН СТРОГО ПОД ПЛАШКОЙ БРОКЕРА
         html += f"""
         <div class="account-card" style="border-left: 5px solid {status_color};">
             <div class="card-header">
                 <div><b>KRYSTAL (CLASSIC +)</b> <span class="sush-badge" style="background:{sush_color};">{total_account_orders}</span></div>
-                
                 <div class="broker-wrap-right">
                     <span class="broker-black">{info.get('company','Alpari')}</span>
-                    <!-- КРУПНЫЙ ЖИРНЫЙ ЖИВОЙ ШРИФТ ПРИБЫЛИ ДНЯ СТРОГО ПОД ПЛАШКОЙ -->
                     <span class="day-profit-under" style="color:{p_today_color};">{p_today_text} USD</span>
                 </div>
             </div>
-            
             <div class="grid-main" style="margin-top:-14px;"><div style="font-size:11px; color:#71717a;">ID: {login}</div></div>
-            
             <div class="grid-main">
                 <div><span style="color:#71717a; font-size:8px; text-transform:uppercase;">Текущая Просадка</span><br><span style="color:{status_color}; font-size:16px;">{dd_percent:.2f}%</span></div>
                 <div style="text-align:right;"><span style="color:#71717a; font-size:8px; text-transform:uppercase;">Уровень маржи</span><br><span style="color:#10b981; font-size:16px;">{margin_level if margin_level > 0 else '8903'}%</span></div>
             </div>
-            
             <div class="thick-progress-bar">
                 <div class="progress-equity-fill" style="width: {progress_percent}%;">${usd_equity:,.2f}</div>
                 <div class="progress-work-text">${usd_in_work:,.2f}</div>
             </div>
-            
             <div class="tiles">{tiles_html}</div>
         </div>
         """
@@ -243,10 +236,10 @@ def home():
     </div>
     <div id="sidePanel" class="side-panel">
         <div class="panel-header"><span class="panel-title">💰 Мониторинг Доходов</span><button class="close-panel-btn" onclick="closePanel()">✕</button></div>
-        <div style="background: linear-gradient(135deg, #1e293b, #0f172a); border-radius:12px; padding:10px; border:1px solid #1c1c1f; margin-bottom:10px;">
+        <div style="background: linear-gradient(135deg, #1e293b, #0f172a); border-radius:12px; padding:12px; border:1px solid #1c1c1f; margin-bottom:10px;">
             <div style="font-size:11px; color:#71717a; text-transform:uppercase; font-weight:700;">🔷 ОБЩИЙ БАЛАНС ПОРТФЕЛЯ</div>
             <div style="font-size:20px; font-weight:900; color:#fff; margin-top:2px;">${portfolio_balance:,.2f}</div>
-            <table class="report-table" style="margin-top:8px;">
+            <table class="report-table-top" style="margin-top:8px;">
                 <thead><tr style="color:#71717a; font-size:9px;"><th>период</th><th>текущий</th><th>прошлый</th></tr></thead>
                 <tbody>{table_rows_html}</tbody>
             </table>
@@ -255,6 +248,7 @@ def home():
     </div>
     <script>
         function openPanel() {{ document.getElementById('sidePanel').classList.add('open'); }}
+        function closeModal(login) {{ }}
         function closePanel() {{ document.getElementById('sidePanel').classList.remove('open'); }}
     </script>
     </body></html>
