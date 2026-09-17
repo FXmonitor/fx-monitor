@@ -128,19 +128,27 @@ def home():
         </div>
         """
 
-        # ЖЕСТКИЙ ПОРЯДОК СОРТИРОВКИ ВАЛЮТНЫХ ПАР ПО ТВОЕМУ СПИСКУ
+        def get_grid_orders(total_lot):
+            if total_lot <= 0: return 0
+            base = 0.10 if total_lot >= 0.10 else 0.01
+            exponent = 1.35; sum_lots = 0.0; orders = 0
+            while sum_lots < (total_lot - 0.005) and orders < 20:
+                sum_lots += base * math.pow(exponent, orders)
+                orders += 1
+            return orders if orders > 0 else 1
+
         desired_order = ["EURGBP", "EURUSD", "GBPUSD", "GBPCHF", "USDCAD"]
         pairs = info.get("pairs", {})
         tiles_html = ""
         
-        # Сортируем пары: сначала идут те, что в списке, затем все остальные (если появятся новые)
+        # ИСПРАВЛЕННАЯ СОРТИРОВКА: Сортируем строго по текстовому ключу пары pair_name (x[0])
         sorted_pairs = sorted(pairs.items(), key=lambda x: desired_order.index(x[0]) if x[0] in desired_order else 999)
         
         for pair, v in sorted_pairs:
             b_lot = float(v.get('buy', 0.0))
             s_lot = float(v.get('sell', 0.0))
-            b_count = int(v.get('buy_cnt', 0))
-            s_count = int(v.get('sell_cnt', 0))
+            b_count = get_grid_orders(b_lot)
+            s_count = get_grid_orders(s_lot)
             
             raw_pair_profit = float(v.get('profit', 0.0))
             pair_dd_percent = abs((raw_pair_profit / raw_balance) * 100) if raw_balance > 0 else 0
