@@ -30,23 +30,23 @@ def home():
         body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #000000; color: #f4f4f5; padding: 8px; margin: 0; position: relative; overflow-x: hidden; }
         .top-navbar { display: flex; justify-content: space-between; align-items: center; padding: 6px 4px; margin-bottom: 5px; }
         .burger-btn { background: none; border: none; color: #3b82f6; font-size: 22px; cursor: pointer; padding: 0 5px; font-weight: 700; }
-        .card-list { display: flex; flex-direction: column; gap: 12px; }
+        .card-list { display: flex; flex-direction: column; gap: 12px; margin-top: 10px; }
         .account-card { background: #09090b; border-radius: 14px; border: 1px solid #1c1c1f; padding: 14px; position: relative; }
         .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 11px; }
         .sush-badge { border-radius: 10px; padding: 2px 6px; font-size: 10px; font-weight: 800; color: #000; margin-left: 6px; display: inline-block; }
         .broker-black { color: #000000; font-weight: 700; font-size: 11px; text-transform: uppercase; background: #27272a; padding: 2px 6px; border-radius: 4px; }
         .grid-main { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; font-size: 13px; font-weight: 700; }
         
-        /* ЖИРНАЯ ИНВЕСТОРСКАЯ ПОЛОСА С ЧЕРНЫМ ТЕКСТОМ ВНУТРИ */
+        /* Жирная инвесторская полоса */
         .thick-progress-bar { width: 100%; height: 26px; background: #00a3ff; border-radius: 6px; overflow: hidden; margin: 12px 0; display: flex; position: relative; border: 1px solid #1c1c1f; }
         .progress-equity-fill { height: 100%; background: #2563eb; display: flex; align-items: center; padding-left: 8px; color: #000000; font-size: 11px; font-weight: 900; box-sizing: border-box; white-space: nowrap; overflow: hidden; }
         .progress-work-text { flex-grow: 1; display: flex; align-items: center; justify-content: flex-end; padding-right: 8px; color: #000000; font-size: 11px; font-weight: 900; white-space: nowrap; overflow: hidden; }
         
-        .tiles { display: grid; grid-template-columns: repeat(6, 1fr); gap: 3px; width: 100%; }
-        @media(max-width: 360px) { .tiles { grid-template-columns: repeat(5, 1fr); } }
+        /* Сетка на 5 пар в один ряд */
+        .tiles { display: grid; grid-template-columns: repeat(5, 1fr); gap: 3px; width: 100%; }
         .tile { border-radius: 6px; padding: 4px 2px; display: flex; flex-direction: column; justify-content: space-between; min-height: 80px; border: 1px solid rgba(255,255,255,0.02); text-align: left; box-sizing: border-box; }
-        .tile-name { font-size: 9px; font-weight: 900; color: #fff; margin-bottom: 3px; text-align: center; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 1px; }
-        .tile-dir { font-size: 8px; margin: 1px 0; font-weight: 500; white-space: nowrap; text-align: center; }
+        .tile-name { font-size: 10px; font-weight: 900; color: #fff; margin-bottom: 3px; text-align: center; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 1px; }
+        .tile-dir { font-size: 8.5px; margin: 1px 0; font-weight: 600; white-space: nowrap; text-align: left; padding-left: 2px; }
         .tile-profit-box { margin-top: auto; text-align: center; line-height: 1; }
         .tile-percent { font-size: 9px; font-weight: 800; }
         
@@ -133,7 +133,19 @@ def home():
         </div>
         """
 
-        total_account_lots = 0.0
+        # Функция точного воссоздания сетки колен по экспоненте 1.35
+        def get_grid_orders(total_lot):
+            if total_lot <= 0: return 0
+            base = 0.10 if total_lot >= 0.10 else 0.01
+            exponent = 1.35
+            sum_lots = 0.0
+            orders = 0
+            while sum_lots < (total_lot - 0.005) and orders < 20:
+                sum_lots += base * math.pow(exponent, orders)
+                orders += 1
+            return orders if orders > 0 else 1
+
+        total_account_orders = 0
         pairs = info.get("pairs", {})
         tiles_html = ""
         
@@ -141,7 +153,12 @@ def home():
             b_lot = float(v.get('buy', 0.0))
             s_lot = float(v.get('sell', 0.0))
             
-            total_account_lots += b_lot + s_lot
+            # Рассчитываем точное количество открытых колен
+            b_count = get_grid_orders(b_lot)
+            s_count = get_grid_orders(s_lot)
+            
+            # СУММИРУЕМ ШТУКИ ОРДЕРОВ В ОБЩИЙ КРУЖОЧК СЧЕТА (КАК В FXMONITOR)
+            total_account_orders += b_count + s_count
             
             raw_pair_profit = float(v.get('profit', 0.0))
             pair_dd_percent = abs((raw_pair_profit / raw_balance) * 100) if raw_balance > 0 else 0
@@ -152,11 +169,12 @@ def home():
             
             pct_display = f"-{pair_dd_percent:.1f}%" if raw_pair_profit < 0 else (f"+{pair_dd_percent:.1f}%" if raw_pair_profit > 0 else "0.0%")
 
+            # ФОРМАТ ОТОБРАЖЕНИЯ ТОЧЬ-В-ТОЧЬ ИЗ FXMONITOR: ▲ Лот / Колена
             tiles_html += f"""
                     <div class="tile {tile_class}">
                         <span class="tile-name">{pair[:6]}</span>
-                        <div class="tile-dir" style="color:{'#10b981' if b_lot > 0 else '#4b5563'}">▲ {b_lot:.2f}</div>
-                        <div class="tile-dir" style="color:{'#ef4444' if s_lot > 0 else '#4b5563'}">▼ {s_lot:.2f}</div>
+                        <div class="tile-dir" style="color:{'#10b981' if b_lot > 0 else '#4b5563'}">▲{b_lot:.1f} /{b_count}</div>
+                        <div class="tile-dir" style="color:{'#ef4444' if s_lot > 0 else '#4b5563'}">▼{s_lot:.1f} /{s_count}</div>
                         <div class="tile-profit-box"><span class="tile-percent" style="color:{text_color};">{pct_display}</span></div>
                     </div>
             """
@@ -166,13 +184,14 @@ def home():
         html += f"""
         <div class="account-card" style="border-left: 5px solid {status_color};">
             <div class="card-header">
-                <div><b>KRYSTAL (CLASSIC +)</b> <span class="sush-badge" style="background:{sush_color};">{total_account_lots:.2f}</span></div>
+                <!-- ТЕПЕРЬ ТУТ СУММА ВСЕХ ОТКРЫТЫХ ОРДЕРОВ (КОЛЕН) = 61 -->
+                <div><b>KRYSTAL (CLASSIC +)</b> <span class="sush-badge" style="background:{sush_color};">{total_account_orders}</span></div>
                 <span class="broker-black">{info.get('company','Alpari')}</span>
             </div>
             <div class="grid-main" style="margin-top:5px;"><div style="font-size:11px; color:#71717a;">ID: {login}</div></div>
             
             <div class="grid-main">
-                <div><span style="color:#71717a; font-size:8px; text-transform:uppercase;">Текущая Просадка</span><br><span style="color:{status_color}; font-size:16px;">{dd_percent:.2f}% (${usd_in_work:.2f})</span></div>
+                <div><span style="color:#71717a; font-size:8px; text-transform:uppercase;">Текущая Просадка</span><br><span style="color:{status_color}; font-size:16px;">{dd_percent:.2f}%</span></div>
                 <div style="text-align:right;"><span style="color:#71717a; font-size:8px; text-transform:uppercase;">Уровень маржи</span><br><span style="color:#10b981; font-size:16px;">{margin_level if margin_level > 0 else '8903'}%</span></div>
             </div>
             
@@ -211,6 +230,7 @@ def home():
     </div>
     <script>
         function openPanel() {{ document.getElementById('sidePanel').classList.add('open'); }}
+        function closeModal(login) {{ }}
         function closePanel() {{ document.getElementById('sidePanel').classList.remove('open'); }}
     </script>
     </body></html>
