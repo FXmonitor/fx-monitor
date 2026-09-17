@@ -126,7 +126,19 @@ def home():
         pairs = info.get("pairs", {})
         tiles_html = ""
         
-        for pair, v in pairs.items():
+        # ЖЕСТКИЙ РУЧНОЙ СПИСОК ВЫВОДА ВАЛЮТНЫХ ПАР ПО ТВОЕМУ ПОРЯДКУ
+        ordered_keys = ["EURGBP", "EURUSD", "GBPUSD", "GBPCHF", "USDCAD"]
+        
+        for pair in ordered_keys:
+            # Ищем данные пары в прилетевшем словаре, если брокер добавил суффикс — берем его ключ
+            v = {}
+            actual_key = pair
+            for k in pairs.keys():
+                if pair in k.upper():
+                    v = pairs[k]
+                    actual_key = k
+                    break
+            
             b_lot = float(v.get('buy', 0.0))
             s_lot = float(v.get('sell', 0.0))
             b_count = int(v.get('buy_cnt', 0))
@@ -141,10 +153,9 @@ def home():
             
             pct_display = f"-{pair_dd_percent:.1f}%" if raw_pair_profit < 0 else (f"+{pair_dd_percent:.1f}%" if raw_pair_profit > 0 else "0.0%")
 
-            # Передаем data-pair для мгновенной JS-сортировки внутри телефона
             tiles_html += f"""
-                    <div class="tile {tile_class}" data-pair="{pair.upper()}">
-                        <span class="tile-name">{pair[:6]}</span>
+                    <div class="tile {tile_class}">
+                        <span class="tile-name">{actual_key[:6]}</span>
                         <div class="tile-dir" style="color:{'#10b981' if b_lot > 0 else '#4b5563'}">▲ {b_lot:.2f} /{b_count}</div>
                         <div class="tile-dir" style="color:{'#ef4444' if s_lot > 0 else '#4b5563'}">▼ {s_lot:.2f} /{s_count}</div>
                         <div class="tile-profit-box"><span class="tile-percent" style="color:{text_color};">{pct_display}</span></div>
@@ -171,7 +182,7 @@ def home():
                 <div class="progress-work-text">${usd_in_work:,.2f}</div>
             </div>
             
-            <div class="tiles" id="tiles_{login}">
+            <div class="tiles">
                 {tiles_html}
             </div>
         </div>
@@ -202,31 +213,6 @@ def home():
     <script>
         function openPanel() {{ document.getElementById('sidePanel').classList.add('open'); }}
         function closePanel() {{ document.getElementById('sidePanel').classList.remove('open'); }}
-
-        // НАДЕЖНАЯ JS-СОРТИРОВКА ВНУТРИ АЙФОНА ПО ТВОЕМУ ПОРЯДКУ
-        document.addEventListener('DOMContentLoaded', () => {{
-            const desiredOrder = ["EURGBP", "EURUSD", "GBPUSD", "GBPCHF", "USDCAD"];
-            const containers = document.querySelectorAll('.tiles');
-            
-            containers.forEach(container => {{
-                const elements = Array.from(container.children);
-                elements.sort((a, b) => {{
-                    let nameA = a.getAttribute('data-pair') || "";
-                    let nameB = b.getAttribute('data-pair') || "";
-                    
-                    desiredOrder.forEach(p => {{
-                        if(nameA.includes(p)) nameA = p;
-                        if(nameB.includes(p)) nameB = p;
-                    }});
-                    
-                    let idxA = desiredOrder.indexOf(nameA);
-                    let idxB = desiredOrder.indexOf(nameB);
-                    
-                    return (idxA === -1 ? 999 : idxA) - (idxB === -1 ? 999 : idxB);
-                }});
-                elements.forEach(el => container.appendChild(el));
-            }});
-        }});
     </script>
     </body></html>
     """
