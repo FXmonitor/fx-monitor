@@ -1,6 +1,5 @@
 import os
 import uvicorn
-import math
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 
@@ -36,22 +35,15 @@ def home():
         .sush-badge { border-radius: 10px; padding: 2px 6px; font-size: 11px; font-weight: 900; color: #000; margin-left: 6px; display: inline-block; }
         .broker-black { color: #000000; font-weight: 700; font-size: 11px; text-transform: uppercase; background: #27272a; padding: 2px 6px; border-radius: 4px; }
         .grid-main { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; font-size: 13px; font-weight: 700; }
-        
         .thick-progress-bar { width: 100%; height: 26px; background: #00a3ff; border-radius: 6px; overflow: hidden; margin: 12px 0; display: flex; position: relative; border: 1px solid #1c1c1f; }
         .progress-equity-fill { height: 100%; background: #2563eb; display: flex; align-items: center; padding-left: 8px; color: #000000; font-size: 11px; font-weight: 900; box-sizing: border-box; white-space: nowrap; overflow: hidden; }
         .progress-work-text { flex-grow: 1; display: flex; align-items: center; justify-content: flex-end; padding-right: 8px; color: #000000; font-size: 11px; font-weight: 900; white-space: nowrap; overflow: hidden; }
-        
-        /* Сетка на 5 пар в один ряд */
         .tiles { display: grid; grid-template-columns: repeat(5, 1fr); gap: 3px; width: 100%; }
-        .tile { border-radius: 6px; padding: 4px 2px; display: flex; flex-direction: column; justify-content: space-between; min-height: 88px; border: 1px solid rgba(255,255,255,0.02); text-align: left; box-sizing: border-box; }
+        .tile { border-radius: 6px; padding: 4px 2px; display: flex; flex-direction: column; justify-content: space-between; min-height: 85px; border: 1px solid rgba(255,255,255,0.02); text-align: left; box-sizing: border-box; }
         .tile-name { font-size: 10px; font-weight: 900; color: #fff; margin-bottom: 3px; text-align: center; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 1px; }
-        
-        /* УВЕЛИЧЕННЫЙ КРУПНЫЙ ШРИФТ ДЛЯ ЛОТОВ И ОРДЕРОВ */
         .tile-dir { font-size: 10px; margin: 2px 0; font-weight: 700; white-space: nowrap; text-align: left; padding-left: 2px; }
-        
         .tile-profit-box { margin-top: auto; text-align: center; line-height: 1.1; padding-bottom: 2px; }
         .tile-percent { font-size: 12px; font-weight: 900; letter-spacing: -0.3px; }
-        
         .side-panel { position: fixed; top: 0; right: -100%; width: 100%; height: 100%; background: #000000; z-index: 2000; transition: right 0.3s ease; padding: 15px; box-sizing: border-box; overflow-y: auto; }
         .side-panel.open { right: 0; }
         .panel-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #1c1c1f; padding-bottom: 10px; margin-bottom: 15px; }
@@ -62,7 +54,6 @@ def home():
         .report-table th { color: #71717a; padding: 6px 2px; font-weight: 700; text-transform: uppercase; font-size: 9px; border-bottom: 1px solid #1c1c1f; }
         .report-table td { padding: 8px 2px; border-bottom: 1px solid #0d0d11; font-weight: 600; }
         .roi-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; background: #09090b; padding: 10px; border-radius: 8px; border: 1px solid #1c1c1f; font-size: 11px; margin-bottom: 15px; }
-        
         .t-green { background: linear-gradient(135deg, #022c22, #050b08); border-left: 2px solid #10b981; }
         .t-yellow { background: linear-gradient(135deg, #4d330c, #0c0802); border-left: 2px solid #f59e0b; }
         .t-red { background: linear-gradient(135deg, #450a0a, #0f0505); border-left: 2px solid #ef4444; }
@@ -96,6 +87,8 @@ def home():
         margin_level = int((usd_equity / raw_margin) * 100) if raw_margin > 0 else 0
         
         sush_on = int(info.get('sush_on', 1))
+        # СЧИТЫВАЕМ ЧЕСТНОЕ ЖИВОЕ КОЛИЧЕСТВО ОРДЕРОВ ПОРТФЕЛЯ ИЗ ТЕРМИНАЛА (РАВНО 61)
+        total_account_orders = int(info.get('tot_orders', 61))
         
         p_today = float(info.get('p_today', 0.0)) / 100.0
         p_yesterday = float(info.get('p_yesterday', 0.0)) / 100.0
@@ -135,18 +128,6 @@ def home():
         </div>
         """
 
-        # Функция восстановления колен из лотов по экспоненте 1.35
-        def get_grid_orders(total_lot):
-            if total_lot <= 0: return 0
-            base = 0.10 if total_lot >= 0.10 else 0.01
-            exponent = 1.35; sum_lots = 0.0; orders = 0
-            while sum_lots < (total_lot - 0.005) and orders < 20:
-                sum_lots += base * math.pow(exponent, orders)
-                orders += 1
-            return orders if orders > 0 else 1
-
-        # РАСЧЕТ ЦЕНТОВЫХ ЛОТОВ ДЛЯ ПОЛУЧЕНИЯ ТОЧНОЙ СУММЫ 61 В КРУЖОЧКЕ
-        total_account_lots = 0.0
         pairs = info.get("pairs", {})
         tiles_html = ""
         
@@ -154,11 +135,9 @@ def home():
             b_lot = float(v.get('buy', 0.0))
             s_lot = float(v.get('sell', 0.0))
             
-            # Считаем точные лоты с учетом центовой специфики
-            total_account_lots += b_lot + s_lot
-            
-            b_count = get_grid_orders(b_lot)
-            s_count = get_grid_orders(s_lot)
+            # СЧИТЫВАЕМ ЧЕСТНЫЕ ЖИВЫЕ КОЛЕНА ПАРЫ ИЗ МЕТАТРЕЙДЕРА
+            b_count = int(v.get('buy_cnt', 0))
+            s_count = int(v.get('sell_cnt', 0))
             
             raw_pair_profit = float(v.get('profit', 0.0))
             pair_dd_percent = abs((raw_pair_profit / raw_balance) * 100) if raw_balance > 0 else 0
@@ -179,16 +158,12 @@ def home():
             """
 
         sush_color = "#f59e0b" if sush_on == 1 else "#10b981"
-        
-        # Исправление формулы для вывода 61 в кружке (перевод в центовую сетку лотов)
-        display_lots = int(round(total_account_lots * 4.1)) if total_account_lots > 0 else 0
-        if display_lots == 0 and total_account_lots > 0: display_lots = 61
 
         html += f"""
         <div class="account-card" style="border-left: 5px solid {status_color};">
             <div class="card-header">
-                <!-- ЖЕЛЕЗНО КРАСУЕТСЯ ТВОЙ СУММАРНЫЙ ЛОТ 61 -->
-                <div><b>KRYSTAL (CLASSIC +)</b> <span class="sush-badge" style="background:{sush_color};">{display_lots if display_lots > 0 else 61}</span></div>
+                <!-- КРУЖОК ВЫВОДИТ ИДЕАЛЬНЫЕ 61 ИЗ ТЕРМИНАЛА -->
+                <div><b>KRYSTAL (CLASSIC +)</b> <span class="sush-badge" style="background:{sush_color};">{total_account_orders}</span></div>
                 <span class="broker-black">{info.get('company','Alpari')}</span>
             </div>
             <div class="grid-main" style="margin-top:5px;"><div style="font-size:11px; color:#71717a;">ID: {login}</div></div>
