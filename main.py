@@ -35,7 +35,6 @@ def home():
         body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #000000; color: #f4f4f5; padding: 8px; margin: 0; }
         .card-list { display: flex; flex-direction: column; gap: 10px; margin-top: 5px; }
         
-        /* Стили вкладок-аккордеонов */
         .account-accordion { background: #09090b; border-radius: 12px; border: 1px solid #1c1c1f; overflow: hidden; padding: 12px; cursor: pointer; }
         .accordion-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
         .acc-info { display: flex; flex-direction: column; gap: 2px; }
@@ -47,18 +46,16 @@ def home():
         
         .work-line { border-top: 1px solid #1c1c1f; border-bottom: 1px solid #1c1c1f; padding: 6px 0; margin: 8px 0; font-size: 12px; font-weight: 700; display: flex; justify-content: space-between; align-items: center; }
         
-        /* Плашки финансового отчета на главной */
         .profit-timeline { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin-top: 6px; }
         .profit-tab { background: #141417; border: 1px solid #27272a; border-radius: 6px; padding: 4px; text-align: center; }
         .profit-val { font-size: 9px; font-weight: 800; margin-top: 1px; }
         
-        /* Раскрывающаяся подвкладка плотности */
         .accordion-content { display: none; padding-top: 10px; margin-top: 8px; border-top: 1px solid #1c1c1f; cursor: default; }
         .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
         .label { font-size: 8px; color: #71717a; text-transform: uppercase; letter-spacing: 0.5px; }
         .val-big { font-size: 18px; font-weight: 900; color: #ffffff; }
         
-        /* ЖЕСТКАЯ СЕТКА НА 5 КОЛОНОК В ОДИН РЯД ДЛЯ СМАРТФОНА */
+        /* Жесткая сетка на 5 колонок в один ряд */
         .tiles { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; width: 100%; box-sizing: border-box; }
         .tile { border-radius: 6px; padding: 4px; display: flex; flex-direction: column; justify-content: space-between; min-height: 85px; border: 1px solid rgba(255,255,255,0.02); text-align: left; box-sizing: border-box; overflow: hidden; }
         .tile-name { font-size: 10px; font-weight: 900; color: #fff; margin-bottom: 2px; text-align: center; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 2px; }
@@ -79,12 +76,14 @@ def home():
         usd_balance = raw_balance / 100.0
         usd_equity = float(info.get('equity', 0.0)) / 100.0
         
+        # Нагрузка = Баланс - Эквити
         usd_in_work = usd_balance - usd_equity
         if usd_in_work < 0: usd_in_work = 0.0
         
         dd_percent = (usd_in_work / usd_balance) * 100 if usd_balance > 0 else 0
         
-        raw_margin = float(info.get('margin', 0.0))
+        # Перевод маржи из центов в USD
+        raw_margin = float(info.get('margin', 0.0)) / 100.0
         margin_level = int((usd_equity / raw_margin) * 100) if raw_margin > 0 else 0
         
         p_today = float(info.get('p_today', 0.0)) / 100.0
@@ -176,18 +175,18 @@ def home():
                 tile_class = "t-red"
                 text_color = "#ef4444"
             
+            # ВОЗВРАЩАЕМ РАСЧЕТ ИЗ ВЕРСИИ V7: Считаем колена на основе присланных лотов (лот * 10)
             b_count = int(b_lot * 10) if b_lot > 0 else 0
             s_count = int(s_lot * 10) if s_lot > 0 else 0
             
             pct_display = f"-{pair_dd_percent:.1f}%" if usd_pair_profit < 0 else (f"+{pair_dd_percent:.1f}%" if usd_pair_profit > 0 else "0.0%")
             prof_display = f"${usd_pair_profit:.1f}" if usd_pair_profit != 0 else "$0.0"
 
-            # ЗАМЕНА КРУЖОЧКОВ НА СТРОГИЕ ЧЕРНЫЕ ТРЕУГОЛЬНИКИ ▲ И ▼
             html += f"""
                     <div class="tile {tile_class}">
                         <span class="tile-name">{pair[:6]}</span>
-                        <div class="tile-dir" style="color:{'#10b981' if b_lot > 0 else '#4b5563'}">▲ {b_lot:.1f} ({b_count})</div>
-                        <div class="tile-dir" style="color:{'#ef4444' if s_lot > 0 else '#4b5563'}">▼ {s_lot:.1f} ({s_count})</div>
+                        <div class="tile-dir" style="color:{'#10b981' if b_lot > 0 else '#4b5563'}">▲ {b_lot:.2f} ({b_count})</div>
+                        <div class="tile-dir" style="color:{'#ef4444' if s_lot > 0 else '#4b5563'}">▼ {s_lot:.2f} ({s_count})</div>
                         <div class="tile-profit-box">
                             <span class="tile-percent" style="color:{text_color};">{pct_display}</span>
                             <span class="tile-profit">({prof_display})</span>
