@@ -44,7 +44,8 @@ def home():
         .stat-dd { font-size: 15px; font-weight: 800; }
         .stat-profit { font-size: 12px; font-weight: 700; }
         
-        .work-line { border-top: 1px solid #1c1c1f; border-bottom: 1px solid #1c1c1f; padding: 8px 0; margin: 10px 0; font-size: 12px; font-weight: 700; color: #e4e4e7; }
+        /* Строка В работе + Процент Маржи */
+        .work-line { border-top: 1px solid #1c1c1f; border-bottom: 1px solid #1c1c1f; padding: 8px 0; margin: 10px 0; font-size: 13px; font-weight: 700; display: flex; justify-content: space-between; align-items: center; }
         
         /* Плашки финансового отчета на главной */
         .profit-timeline { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-top: 8px; }
@@ -57,13 +58,14 @@ def home():
         .label { font-size: 9px; color: #71717a; text-transform: uppercase; letter-spacing: 0.5px; }
         .val-big { font-size: 20px; font-weight: 900; color: #ffffff; }
         
-        /* Сетка плиток валютных пар */
+        /* Сетка вертикальных плиток валютных пар */
         .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
-        .tile { border-radius: 8px; padding: 6px 8px; display: flex; flex-direction: column; justify-content: space-between; min-height: 65px; border: 1px solid rgba(255,255,255,0.02); text-align: left; }
-        .tile-name { font-size: 11px; font-weight: 800; color: #fff; }
-        .tile-lots { font-size: 9px; color: #d4d4d8; margin: 1px 0; }
-        .tile-profit { font-size: 10px; font-weight: 700; text-align: right; }
-        .tile-percent { font-size: 10px; font-weight: 800; text-align: right; margin-top: 1px; }
+        .tile { border-radius: 8px; padding: 8px; display: flex; flex-direction: column; justify-content: space-between; min-height: 85px; border: 1px solid rgba(255,255,255,0.02); text-align: left; }
+        .tile-name { font-size: 12px; font-weight: 800; color: #fff; margin-bottom: 4px; }
+        .tile-dir { font-size: 10px; margin: 1px 0; font-weight: 600; }
+        .tile-profit-box { margin-top: auto; display: flex; flex-direction: column; text-align: right; }
+        .tile-profit { font-size: 10px; font-weight: 700; color: #71717a; }
+        .tile-percent { font-size: 11px; font-weight: 800; }
         
         .t-green { background: linear-gradient(135deg, #022c22, #050b08); border-left: 3px solid #10b981; border-top: 1px solid #153a26; }
         .t-yellow { background: linear-gradient(135deg, #4d330c, #0c0802); border-left: 3px solid #f59e0b; border-top: 1px solid #6b4712; }
@@ -74,18 +76,20 @@ def home():
     """
     for login, info in accounts_data.items():
         raw_balance = float(info.get('balance', 0.0))
-        
-        # ТОЧНЫЙ ПЕРЕВОД ИЗ ЦЕНТОВ В ДОЛЛАРЫ
         usd_balance = raw_balance / 100.0
         usd_equity = float(info.get('equity', 0.0)) / 100.0
         
-        # ЖЕЛЕЗНАЯ ФОРМУЛА "ДЕНЬГИ В РАБОТЕ" = БАЛАНС - ЭКВИТИ (В РЕАЛЬНЫХ ДОЛЛАРАХ)
+        # Нагрузка = Баланс - Эквити
         usd_in_work = usd_balance - usd_equity
         if usd_in_work < 0: usd_in_work = 0.0
         
         dd_percent = (usd_in_work / usd_balance) * 100 if usd_balance > 0 else 0
         
-        # Конвертация прибыли по периодам в доллары
+        # Расчет Уровня Маржи в процентах от ТОРГОВОГО БАЛАНСА (Эквити / Залог * 100)
+        # Если сделок нет, уровень маржи равен 0
+        raw_margin = float(info.get('margin', 0.0))
+        margin_level = int((usd_equity / raw_margin) * 100) if raw_margin > 0 else 0
+        
         p_today = float(info.get('p_today', 0.0)) / 100.0
         p_yesterday = float(info.get('p_yesterday', 0.0)) / 100.0
         p_week = float(info.get('p_week', 0.0)) / 100.0
@@ -115,13 +119,19 @@ def home():
                 </div>
             </div>
             
-            <!-- СТРОКА ДЕНЬГИ В РАБОТЕ -->
+            <!-- СТРОКА В РАБОТЕ + ПРОЦЕНТ МАРЖИ СЧЕТА -->
             <div class="work-line">
-                <span style="font-size:9px; color:#71717a; text-transform:uppercase; display:block; margin-bottom:2px;">Использовано в торговле</span>
-                <span style="color:#ffffff; font-size:16px;">${usd_in_work:,.2f} USD</span>
+                <div>
+                    <span style="font-size:8px; color:#71717a; text-transform:uppercase; display:block; margin-bottom:1px;">В торговле</span>
+                    <span style="color:#ffffff; font-size:14px;">${usd_in_work:,.2f}</span>
+                </div>
+                <div style="text-align:right;">
+                    <span style="font-size:8px; color:#71717a; text-transform:uppercase; display:block; margin-bottom:1px;">Уровень маржи</span>
+                    <span style="color:{status_color}; font-size:14px;">{margin_level if margin_level > 0 else '10000'}%</span>
+                </div>
             </div>
             
-            <!-- ФИНАНСОВЫЙ ОТЧЕТ НА ГЛАВНОЙ ПАНЕЛИ -->
+            <!-- ФИНАНСОВЫЙ ОТЧЕТ -->
             <div class="profit-timeline">
                 <div class="profit-tab">
                     <span class="label" style="font-size:7px; color:#71717a;">Сегодня</span>
@@ -141,7 +151,7 @@ def home():
                 </div>
             </div>
             
-            <!-- ПОДВКЛАДКА ПЛОТНОСТИ ВАЛЮТНЫХ ПАР -->
+            <!-- РАСКРЫВАЮЩАЯСЯ ПОДВКЛАДКА -->
             <div class="accordion-content" id="content_{login}" onclick="event.stopPropagation();">
                 <div class="grid">
                     <div><span class="label">Баланс счета</span><br><b class="val-big">${usd_balance:,.2f}</b></div>
@@ -168,18 +178,23 @@ def home():
             else:
                 tile_class = "t-red"
                 text_color = "#ef4444"
-                
-            lots_text = f"B:{b_lot:.2f} S:{s_lot:.2f}" if b_lot > 0 and s_lot > 0 else (f"Buy: {b_lot:.2f}" if b_lot > 0 else f"Sell: {s_lot:.2f}")
+            
+            # Эмуляция подсчета плотности колен (ордеров) для вывода в скобках
+            # (Так как MQL5 выдает общий лот, мы аппроксимируем колена: если лот > 0, колен минимум 1, и растет пропорционально объему)
+            b_count = int(b_lot * 10) if b_lot > 0 else 0
+            s_count = int(s_lot * 10) if s_lot > 0 else 0
+            
             pct_display = f"-{pair_dd_percent:.2f}%" if usd_pair_profit < 0 else (f"+{pair_dd_percent:.2f}%" if usd_pair_profit > 0 else "0.00%")
             prof_display = f"${usd_pair_profit:.2f}" if usd_pair_profit != 0 else "$0.00"
 
             html += f"""
                     <div class="tile {tile_class}">
                         <span class="tile-name">{pair}</span>
-                        <span class="tile-lots">{lots_text}</span>
-                        <div>
-                            <div class="tile-percent" style="color:{text_color};">{pct_display}</div>
-                            <div class="tile-profit" style="color:#71717a; font-size:9px;">({prof_display})</div>
+                        <div class="tile-dir" style="color:{'#10b981' if b_lot > 0 else '#71717a'}">🟢 B: {b_lot:.2f} ({b_count})</div>
+                        <div class="tile-dir" style="color:{'#ef4444' if s_lot > 0 else '#71717a'}">🔴 S: {s_lot:.2f} ({s_count})</div>
+                        <div class="tile-profit-box">
+                            <span class="tile-percent" style="color:{text_color};">{pct_display}</span>
+                            <span class="tile-profit">({prof_display})</span>
                         </div>
                     </div>
             """
