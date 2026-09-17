@@ -88,8 +88,6 @@ def home():
         if usd_in_work < 0: usd_in_work = 0.0
         
         dd_percent = (usd_in_work / usd_balance) * 100 if usd_balance > 0 else 0
-        
-        # Процент деления жирной полосы
         progress_percent = (usd_equity / usd_balance) * 100 if usd_balance > 0 else 100
         
         raw_margin = float(info.get('margin', 0.0)) / 100.0
@@ -135,7 +133,6 @@ def home():
         </div>
         """
 
-        # ЖЕСТКОЕ МАТЕМАТИЧЕСКОЕ СУММИРОВАНИЕ ВСЕХ ЛОТОВ ПО ВСЕМ ПАРАМ ДЛЯ КРУЖОЧКА
         total_account_lots = 0.0
         pairs = info.get("pairs", {})
         tiles_html = ""
@@ -144,7 +141,6 @@ def home():
             b_lot = float(v.get('buy', 0.0))
             s_lot = float(v.get('sell', 0.0))
             
-            # Суммируем чистые лоты в общую копилку счета
             total_account_lots += b_lot + s_lot
             
             raw_pair_profit = float(v.get('profit', 0.0))
@@ -155,9 +151,7 @@ def home():
             else:                       tile_class = "t-red"; text_color = "#ef4444"
             
             pct_display = f"-{pair_dd_percent:.1f}%" if raw_pair_profit < 0 else (f"+{pair_dd_percent:.1f}%" if raw_pair_profit > 0 else "0.0%")
-            prof_display = f"${raw_pair_profit/100.0:.1f}"
 
-            # ВЫВОД КЛАССИЧЕСКИХ СЫРЫХ ЛОТОВ БЕЗ ДЕЛЕНИЯ НА КОЛЕНА
             tiles_html += f"""
                     <div class="tile {tile_class}">
                         <span class="tile-name">{pair[:6]}</span>
@@ -172,18 +166,16 @@ def home():
         html += f"""
         <div class="account-card" style="border-left: 5px solid {status_color};">
             <div class="card-header">
-                <!-- ВЫВОДИМ СУММУ ВСЕХ ЛОТОВ ДО СОТЫХ ДОЛЕЙ -->
                 <div><b>KRYSTAL (CLASSIC +)</b> <span class="sush-badge" style="background:{sush_color};">{total_account_lots:.2f}</span></div>
                 <span class="broker-black">{info.get('company','Alpari')}</span>
             </div>
             <div class="grid-main" style="margin-top:5px;"><div style="font-size:11px; color:#71717a;">ID: {login}</div></div>
             
             <div class="grid-main">
-                <div><span style="color:#71717a; font-size:8px; text-transform:uppercase;">Текущая Просадка</span><br><span style="color:{status_color}; font-size:16px;">{dd_percent:.2f}% (${drawdown_usd:.2f})</span></div>
+                <div><span style="color:#71717a; font-size:8px; text-transform:uppercase;">Текущая Просадка</span><br><span style="color:{status_color}; font-size:16px;">{dd_percent:.2f}% (${usd_in_work:.2f})</span></div>
                 <div style="text-align:right;"><span style="color:#71717a; font-size:8px; text-transform:uppercase;">Уровень маржи</span><br><span style="color:#10b981; font-size:16px;">{margin_level if margin_level > 0 else '8903'}%</span></div>
             </div>
             
-            <!-- НОВАЯ ЖИРНАЯ ИНВЕСТОРСКАЯ ПОЛОСА С ЖЕСТКИМ ЧЕРНЫМ ТЕКСТОМ ВНУТРИ -->
             <div class="thick-progress-bar">
                 <div class="progress-equity-fill" style="width: {progress_percent}%;">${usd_equity:,.2f}</div>
                 <div class="progress-work-text">${usd_in_work:,.2f}</div>
