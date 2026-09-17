@@ -1,6 +1,5 @@
 import os
 import uvicorn
-import math
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 
@@ -20,7 +19,7 @@ async def update_account(request: Request):
 @app.get("/", response_class=HTMLResponse)
 def home():
     if not accounts_data:
-        return "<html><body style='background:#000;color:#aaa;text-align:center;padding-top:100px;font-family:sans-serif;'><h2>💎 CRYSTAL CLASSIC PLUS</h2><p>Ожидание данных от MT5...</p></body></html>"
+        return "<html><body style='background:#000;color:#aaa;text-align:center;padding-top:100px;font-family:sans-serif;'><h2>💎 CRYSTAL CLASSIC PLUS</h2><p>Ожидание точных долларовых данных от MT5...</p></body></html>"
     
     html = """
     <html><head><meta charset='utf-8'>
@@ -41,6 +40,7 @@ def home():
         .progress-equity-fill { height: 100%; background: #2563eb; display: flex; align-items: center; padding-left: 8px; color: #000000; font-size: 11px; font-weight: 900; box-sizing: border-box; white-space: nowrap; overflow: hidden; }
         .progress-work-text { flex-grow: 1; display: flex; align-items: center; justify-content: flex-end; padding-right: 8px; color: #000000; font-size: 11px; font-weight: 900; white-space: nowrap; overflow: hidden; }
         
+        /* Сетка на 5 пар в один ряд */
         .tiles { display: grid; grid-template-columns: repeat(5, 1fr); gap: 3px; width: 100%; }
         .tile { border-radius: 6px; padding: 4px 2px; display: flex; flex-direction: column; justify-content: space-between; min-height: 85px; border: 1px solid rgba(255,255,255,0.02); text-align: left; box-sizing: border-box; }
         .tile-name { font-size: 10px; font-weight: 900; color: #fff; margin-bottom: 3px; text-align: center; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 1px; }
@@ -137,14 +137,11 @@ def home():
                 orders += 1
             return orders if orders > 0 else 1
 
-        desired_order = ["EURGBP", "EURUSD", "GBPUSD", "GBPCHF", "USDCAD"]
         pairs = info.get("pairs", {})
         tiles_html = ""
         
-        # БЕЗОПАСНАЯ СОРТИРОВКА: Проверяем именно текстовое имя x[0] внутри нашего списка
-        sorted_pairs = sorted(pairs.items(), key=lambda x: desired_order.index(x[0]) if x[0] in desired_order else 999)
-        
-        for pair, v in sorted_pairs:
+        # Собираем чистые плитки. Каждой плитке даем data-атрибут с именем пары для JS-сортировки
+        for pair, v in pairs.items():
             b_lot = float(v.get('buy', 0.0))
             s_lot = float(v.get('sell', 0.0))
             b_count = get_grid_orders(b_lot)
@@ -160,7 +157,7 @@ def home():
             pct_display = f"-{pair_dd_percent:.1f}%" if raw_pair_profit < 0 else (f"+{pair_dd_percent:.1f}%" if raw_pair_profit > 0 else "0.0%")
 
             tiles_html += f"""
-                    <div class="tile {tile_class}">
+                    <div class="tile {tile_class}" data-pair="{pair.upper()}">
                         <span class="tile-name">{pair[:6]}</span>
                         <div class="tile-dir" style="color:{'#10b981' if b_lot > 0 else '#4b5563'}">▲ {b_lot:.2f} /{b_count}</div>
                         <div class="tile-dir" style="color:{'#ef4444' if s_lot > 0 else '#4b5563'}">▼ {s_lot:.2f} /{s_count}</div>
@@ -188,7 +185,8 @@ def home():
                 <div class="progress-work-text">${usd_in_work:,.2f}</div>
             </div>
             
-            <div class="tiles">
+            <!-- Сетка пар, сортируемая скриптом на iPhone -->
+            <div class="tiles" id="tiles_{login}">
                 {tiles_html}
             </div>
         </div>
@@ -218,9 +216,36 @@ def home():
     </div>
     <script>
         function openPanel() {{ document.getElementById('sidePanel').classList.add('open'); }}
-        // Исправленная заглушка для безопасности
-        function closeModal(login) {{ }} 
+        function closeModal(login) {{ }}
         function closePanel() {{ document.getElementById('sidePanel').classList.remove('open'); }}
+
+        // ЖЕСТКАЯ НАДЕЖНАЯ JS-СОРТИРОВКА ВНУТРИ АЙФОНА
+        window.addEventListener('DOMContentLoaded', (event) => {{
+            const desiredOrder = ["EURGBP", "EURUSD", "GBPUSD", "GBPCHF", "USDCAD"];
+            const containers = document.querySelectorAll('.tiles');
+            
+            containers.forEach(container => {{
+                const elements = Array.from(container.children);
+                elements.sort((a, b) => {{
+                    let nameA = a.getAttribute('data-pair') || "";
+                    let nameB = b.getAttribute('data-pair') || "";
+                    
+                    // Очистка от суффиксов брокеров (например EURUSD.c -> EURUSD)
+                    desiredOrder.forEach(p => {{
+                        if(nameA.includes(p)) nameA = p;
+                        if(nameB.includes(p)) nameB = p;
+                    }});
+                    
+                    let idxA = desiredOrder.indexOf(nameA);
+                    let idxB = desiredOrder.indexOf(nameB);
+                    
+                    return (idxA === -1 ? 999 : idxA) - (idxB === -1 ? 999 : idxB);
+                }});
+                
+                // Перестраиваем сетку в нужном порядке
+                elements.forEach(el => container.appendChild(el));
+            }});
+        }});
     </script>
     </body></html>
     """
