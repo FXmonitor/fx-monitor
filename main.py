@@ -141,7 +141,7 @@ def home():
         pairs = info.get("pairs", {})
         tiles_html = ""
         
-        # ИСПРАВЛЕННАЯ СОРТИРОВКА: Сортируем строго по текстовому ключу пары pair_name (x[0])
+        # БЕЗОПАСНАЯ СОРТИРОВКА: Проверяем именно текстовое имя x[0] внутри нашего списка
         sorted_pairs = sorted(pairs.items(), key=lambda x: desired_order.index(x[0]) if x[0] in desired_order else 999)
         
         for pair, v in sorted_pairs:
@@ -218,7 +218,8 @@ def home():
     </div>
     <script>
         function openPanel() {{ document.getElementById('sidePanel').classList.add('open'); }}
-        function closeModal(login) {{ }}
+        // Исправленная заглушка для безопасности
+        function closeModal(login) {{ }} 
         function closePanel() {{ document.getElementById('sidePanel').classList.remove('open'); }}
     </script>
     </body></html>
