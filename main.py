@@ -19,7 +19,7 @@ async def update_account(request: Request):
 @app.get("/", response_class=HTMLResponse)
 def home():
     if not accounts_data:
-        return "<html><body style='background:#000;color:#aaa;text-align:center;padding-top:100px;font-family:sans-serif;'><h2>💎 CRYSTAL CLASSIC PLUS</h2><p>Ожидание данных от MT5...</p></body></html>"
+        return "<html><body style='background:#000;color:#aaa;text-align:center;padding-top:100px;font-family:sans-serif;'><h2>💎 CRYSTAL CLASSIC PLUS</h2><p>Ожидание точных долларовых данных от MT5...</p></body></html>"
     
     html = """
     <html><head><meta charset='utf-8'>
@@ -68,6 +68,7 @@ def home():
     portfolio_equity = 0.0
     table_rows_html = ""
     account_details_html = ""
+
     for login, info in accounts_data.items():
         raw_balance = float(info.get('balance', 0.0))
         usd_balance = raw_balance / 100.0
@@ -86,7 +87,6 @@ def home():
         margin_level = int((usd_equity / raw_margin) * 100) if raw_margin > 0 else 0
         
         sush_on = int(info.get('sush_on', 1))
-        # СЧИТЫВАЕМ ЧЕСТНОЕ ЖИВОЕ КОЛИЧЕСТВО ОРДЕРОВ ПОРТФЕЛЯ ИЗ ТЕРМИНАЛА (РАВНО 61)
         total_account_orders = int(info.get('tot_orders', 61))
         
         p_today = float(info.get('p_today', 0.0)) / 100.0
@@ -130,10 +130,21 @@ def home():
         pairs = info.get("pairs", {})
         tiles_html = ""
         
-        for pair, v in pairs.items():
+        # ТВОЙ ЖЕСТКИЙ ПОРЯДОК СТРОК ДЛЯ ОТОБРАЖЕНИЯ ПАР
+        ordered_keys = ["EURGBP", "EURUSD", "GBPUSD", "GBPCHF", "USDCAD"]
+        
+        for pair in ordered_keys:
+            # Безопасно вытягиваем данные пары из словаря MT5
+            v = {}
+            actual_key = pair
+            for k in pairs.keys():
+                if pair in k.upper():
+                    v = pairs[k]
+                    actual_key = k
+                    break
+            
             b_lot = float(v.get('buy', 0.0))
             s_lot = float(v.get('sell', 0.0))
-            # СЧИТЫВАЕМ ЧЕСТНЫЕ ЖИВЫЕ КОЛЕНА ПАРЫ ИЗ МЕТАТРЕЙДЕРА
             b_count = int(v.get('buy_cnt', 0))
             s_count = int(v.get('sell_cnt', 0))
             
@@ -148,7 +159,7 @@ def home():
 
             tiles_html += f"""
                     <div class="tile {tile_class}">
-                        <span class="tile-name">{pair[:6]}</span>
+                        <span class="tile-name">{actual_key[:6]}</span>
                         <div class="tile-dir" style="color:{'#10b981' if b_lot > 0 else '#4b5563'}">▲ {b_lot:.2f} /{b_count}</div>
                         <div class="tile-dir" style="color:{'#ef4444' if s_lot > 0 else '#4b5563'}">▼ {s_lot:.2f} /{s_count}</div>
                         <div class="tile-profit-box"><span class="tile-percent" style="color:{text_color};">{pct_display}</span></div>
@@ -160,7 +171,6 @@ def home():
         html += f"""
         <div class="account-card" style="border-left: 5px solid {status_color};">
             <div class="card-header">
-                <!-- КРУЖОК ВЫВОДИТ ИДЕАЛЬНЫЕ 61 ИЗ ТЕРМИНАЛА -->
                 <div><b>KRYSTAL (CLASSIC +)</b> <span class="sush-badge" style="background:{sush_color};">{total_account_orders}</span></div>
                 <span class="broker-black">{info.get('company','Alpari')}</span>
             </div>
