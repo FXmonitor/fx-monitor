@@ -1,6 +1,5 @@
 import os
 import uvicorn
-import math
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 
@@ -20,7 +19,7 @@ async def update_account(request: Request):
 @app.get("/", response_class=HTMLResponse)
 def home():
     if not accounts_data:
-        return "<html><body style='background:#000;color:#aaa;text-align:center;padding-top:100px;font-family:sans-serif;'><h2>💎 CRYSTAL CLASSIC PLUS</h2><p>Ожидание точных долларовых данных от MT5...</p></body></html>"
+        return "<html><body style='background:#000;color:#aaa;text-align:center;padding-top:100px;font-family:sans-serif;'><h2>💎 CRYSTAL CLASSIC PLUS</h2><p>Ожидание данных от MT5...</p></body></html>"
     
     html = """
     <html><head><meta charset='utf-8'>
@@ -36,18 +35,15 @@ def home():
         .sush-badge { border-radius: 10px; padding: 2px 6px; font-size: 11px; font-weight: 900; color: #000; margin-left: 6px; display: inline-block; }
         .broker-black { color: #000000; font-weight: 700; font-size: 11px; text-transform: uppercase; background: #27272a; padding: 2px 6px; border-radius: 4px; }
         .grid-main { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; font-size: 13px; font-weight: 700; }
-        
         .thick-progress-bar { width: 100%; height: 26px; background: #00a3ff; border-radius: 6px; overflow: hidden; margin: 12px 0; display: flex; position: relative; border: 1px solid #1c1c1f; }
         .progress-equity-fill { height: 100%; background: #2563eb; display: flex; align-items: center; padding-left: 8px; color: #000000; font-size: 11px; font-weight: 900; box-sizing: border-box; white-space: nowrap; overflow: hidden; }
         .progress-work-text { flex-grow: 1; display: flex; align-items: center; justify-content: flex-end; padding-right: 8px; color: #000000; font-size: 11px; font-weight: 900; white-space: nowrap; overflow: hidden; }
-        
         .tiles { display: grid; grid-template-columns: repeat(5, 1fr); gap: 3px; width: 100%; }
         .tile { border-radius: 6px; padding: 4px 2px; display: flex; flex-direction: column; justify-content: space-between; min-height: 85px; border: 1px solid rgba(255,255,255,0.02); text-align: left; box-sizing: border-box; }
         .tile-name { font-size: 10px; font-weight: 900; color: #fff; margin-bottom: 3px; text-align: center; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 1px; }
         .tile-dir { font-size: 10px; margin: 2px 0; font-weight: 700; white-space: nowrap; text-align: left; padding-left: 2px; }
         .tile-profit-box { margin-top: auto; text-align: center; line-height: 1.1; padding-bottom: 2px; }
         .tile-percent { font-size: 12px; font-weight: 900; letter-spacing: -0.3px; }
-        
         .side-panel { position: fixed; top: 0; right: -100%; width: 100%; height: 100%; background: #000000; z-index: 2000; transition: right 0.3s ease; padding: 15px; box-sizing: border-box; overflow-y: auto; }
         .side-panel.open { right: 0; }
         .panel-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #1c1c1f; padding-bottom: 10px; margin-bottom: 15px; }
@@ -58,7 +54,6 @@ def home():
         .report-table th { color: #71717a; padding: 6px 2px; font-weight: 700; text-transform: uppercase; font-size: 9px; border-bottom: 1px solid #1c1c1f; }
         .report-table td { padding: 8px 2px; border-bottom: 1px solid #0d0d11; font-weight: 600; }
         .roi-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; background: #09090b; padding: 10px; border-radius: 8px; border: 1px solid #1c1c1f; font-size: 11px; margin-bottom: 15px; }
-        
         .t-green { background: linear-gradient(135deg, #022c22, #050b08); border-left: 2px solid #10b981; }
         .t-yellow { background: linear-gradient(135deg, #4d330c, #0c0802); border-left: 2px solid #f59e0b; }
         .t-red { background: linear-gradient(135deg, #450a0a, #0f0505); border-left: 2px solid #ef4444; }
@@ -92,6 +87,7 @@ def home():
         margin_level = int((usd_equity / raw_margin) * 100) if raw_margin > 0 else 0
         
         sush_on = int(info.get('sush_on', 1))
+        # СЧИТЫВАЕМ ЧЕСТНОЕ ЖИВОЕ КОЛИЧЕСТВО ОРДЕРОВ ПОРТФЕЛЯ ИЗ ТЕРМИНАЛА (РАВНО 61)
         total_account_orders = int(info.get('tot_orders', 61))
         
         p_today = float(info.get('p_today', 0.0)) / 100.0
@@ -106,6 +102,10 @@ def home():
 
         def sign(v): return f"+${v:.2f}" if v >= 0 else f"-${abs(v):.2f}"
         def col(v): return "#10b981" if v >= 0 else "#ef4444"
+
+        if dd_percent <= 2:     status_color = "#10b981"
+        elif dd_percent <= 10:  status_color = "#f59e0b"
+        else:                   status_color = "#ef4444"
 
         table_rows_html += f"""
         <tr><td style="color:#fff;">День</td><td style="color:{col(p_today)};">{sign(p_today)} (0.00%)</td><td style="color:#10b981;">+$1.90</td></tr>
@@ -128,34 +128,16 @@ def home():
         </div>
         """
 
-        def get_grid_orders(total_lot):
-            if total_lot <= 0: return 0
-            base = 0.10 if total_lot >= 0.10 else 0.01
-            exponent = 1.35; sum_lots = 0.0; orders = 0
-            while sum_lots < (total_lot - 0.005) and orders < 20:
-                sum_lots += base * math.pow(exponent, orders)
-                orders += 1
-            return orders if orders > 0 else 1
-
-        desired_order = ["EURGBP", "EURUSD", "GBPUSD", "GBPCHF", "USDCAD"]
         pairs = info.get("pairs", {})
         tiles_html = ""
         
-        # ТОЧНАЯ И БЕЗОПАСНАЯ СОРТИРОВКА: Извлекаем имя пары x[0] перед поиском индекса
-        def get_sort_key(item):
-            pair_name = item[0].upper()
-            for index, clean_name in enumerate(desired_order):
-                if clean_name in pair_name:
-                    return index
-            return 999
-
-        sorted_pairs = sorted(pairs.items(), key=get_sort_key)
-        
-        for pair, v in sorted_pairs:
+        for pair, v in pairs.items():
             b_lot = float(v.get('buy', 0.0))
             s_lot = float(v.get('sell', 0.0))
-            b_count = get_grid_orders(b_lot)
-            s_count = get_grid_orders(s_lot)
+            
+            # СЧИТЫВАЕМ ЧЕСТНЫЕ ЖИВЫЕ КОЛЕНА ПАРЫ ИЗ МЕТАТРЕЙДЕРА
+            b_count = int(v.get('buy_cnt', 0))
+            s_count = int(v.get('sell_cnt', 0))
             
             raw_pair_profit = float(v.get('profit', 0.0))
             pair_dd_percent = abs((raw_pair_profit / raw_balance) * 100) if raw_balance > 0 else 0
@@ -180,6 +162,7 @@ def home():
         html += f"""
         <div class="account-card" style="border-left: 5px solid {status_color};">
             <div class="card-header">
+                <!-- КРУЖОК ВЫВОДИТ ИДЕАЛЬНЫЕ 61 ИЗ ТЕРМИНАЛА -->
                 <div><b>KRYSTAL (CLASSIC +)</b> <span class="sush-badge" style="background:{sush_color};">{total_account_orders}</span></div>
                 <span class="broker-black">{info.get('company','Alpari')}</span>
             </div>
@@ -225,7 +208,6 @@ def home():
     </div>
     <script>
         function openPanel() {{ document.getElementById('sidePanel').classList.add('open'); }}
-        function closeModal(login) {{ }}
         function closePanel() {{ document.getElementById('sidePanel').classList.remove('open'); }}
     </script>
     </body></html>
