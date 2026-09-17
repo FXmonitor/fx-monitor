@@ -41,7 +41,6 @@ def home():
         .progress-equity-fill { height: 100%; background: #2563eb; display: flex; align-items: center; padding-left: 8px; color: #000000; font-size: 11px; font-weight: 900; box-sizing: border-box; white-space: nowrap; overflow: hidden; }
         .progress-work-text { flex-grow: 1; display: flex; align-items: center; justify-content: flex-end; padding-right: 8px; color: #000000; font-size: 11px; font-weight: 900; white-space: nowrap; overflow: hidden; }
         
-        /* Сетка на 5 пар в один ряд */
         .tiles { display: grid; grid-template-columns: repeat(5, 1fr); gap: 3px; width: 100%; }
         .tile { border-radius: 6px; padding: 4px 2px; display: flex; flex-direction: column; justify-content: space-between; min-height: 85px; border: 1px solid rgba(255,255,255,0.02); text-align: left; box-sizing: border-box; }
         .tile-name { font-size: 10px; font-weight: 900; color: #fff; margin-bottom: 3px; text-align: center; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 1px; }
@@ -142,7 +141,7 @@ def home():
         pairs = info.get("pairs", {})
         tiles_html = ""
         
-        # БЕЗОПАСНАЯ БЕЗОШИБОЧНАЯ СОРТИРОВКА С ОЧИСТКОЙ СУФФИКСОВ БРОКЕРА
+        # ТОЧНАЯ И БЕЗОПАСНАЯ СОРТИРОВКА: Извлекаем имя пары x[0] перед поиском индекса
         def get_sort_key(item):
             pair_name = item[0].upper()
             for index, clean_name in enumerate(desired_order):
