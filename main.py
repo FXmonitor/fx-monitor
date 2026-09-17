@@ -68,7 +68,7 @@ def home():
     portfolio_equity = 0.0
     table_rows_html = ""
     account_details_html = ""
-for login, info in accounts_data.items():
+    for login, info in accounts_data.items():
         raw_balance = float(info.get('balance', 0.0))
         usd_balance = raw_balance / 100.0
         usd_equity = float(info.get('equity', 0.0)) / 100.0
@@ -133,7 +133,6 @@ for login, info in accounts_data.items():
         for pair, v in pairs.items():
             b_lot = float(v.get('buy', 0.0))
             s_lot = float(v.get('sell', 0.0))
-            
             # СЧИТЫВАЕМ ЧЕСТНЫЕ ЖИВЫЕ КОЛЕНА ПАРЫ ИЗ МЕТАТРЕЙДЕРА
             b_count = int(v.get('buy_cnt', 0))
             s_count = int(v.get('sell_cnt', 0))
