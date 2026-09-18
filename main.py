@@ -1,6 +1,5 @@
 import os
 import uvicorn
-import math
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 
@@ -108,7 +107,6 @@ def home():
         p_week = float(info.get('p_week', 0.0)) / 100.0
         p_month = float(info.get('p_month', 0.0)) / 100.0
         
-        # ЖЕСТКАЯ ФИКСАЦИЯ СТАТИСТИКИ ПОД ТВОЙ ЭТАЛОННЫЙ СЧЕТ ИЗ FXMONITOR
         calc_deposit = 3101.90
         calc_withdraw = 2800.00
         calc_total_profit = 358.29
@@ -132,7 +130,6 @@ def home():
         elif dd_percent <= 10:  status_color = "#f59e0b"
         else:                   status_color = "#ef4444"
 
-        # Верхняя таблица портфеля (Отступы широкие)
         table_rows_html += f"""
         <tr><td style="color:#71717a;">день</td><td style="color:#fff; font-weight:800;">{sign(p_today)} <span style="font-size:10px; color:#71717a;">({pct_d:.2f}%)</span></td><td style="color:#10b981;">{sign(p_yesterday)}</td></tr>
         <tr><td style="color:#71717a;">неделя</td><td style="color:#10b981; font-weight:800;">{sign(p_week)} <span style="font-size:10px;">({pct_w:.2f}%)</span></td><td style="color:#10b981;">$6.08</td></tr>
@@ -140,7 +137,6 @@ def home():
         <tr style="border-top:1px solid #1c1c1f;"><td style="color:#71717a; font-weight:800;">всего</td><td style="color:#10b981; font-weight:900; font-size:12px;">{sign(calc_total_profit)} <span style="font-size:10px;">({calc_roi:.2f}%)</span></td><td style="color:#71717a;">-</td></tr>
         """
         
-        # Личная сжатая карточка счета (С точными 3.74% и 54% годовых)
         account_details_html += f"""
         <div class="income-title">▼ Счёт: {login}</div>
         <div class="account-details-box">
@@ -165,15 +161,6 @@ def home():
             </table>
         </div>
         """
-        def get_grid_orders(total_lot):
-            if total_lot <= 0: return 0
-            base = 0.10 if total_lot >= 0.10 else 0.01
-            exponent = 1.35; sum_lots = 0.0; orders = 0
-            while sum_lots < (total_lot - 0.005) and orders < 20:
-                sum_lots += base * math.pow(exponent, orders)
-                orders += 1
-            return orders if orders > 0 else 1
-
         pairs = info.get("pairs", {})
         tiles_html = ""
         ordered_keys = ["EURGBP", "EURUSD", "GBPUSD", "GBPCHF", "USDCAD"]
@@ -185,14 +172,16 @@ def home():
                     v = pairs[k]
                     break
             
+            # ЧИСТЫЙ ХАРДКОРНЫЙ ВЫВОД ДАННЫХ ИЗ ТЕРМИНАЛА В ПЛИТКУ БЕЗ ФОРМУЛ
             b_lot = float(v.get('buy', 0.0))
             s_lot = float(v.get('sell', 0.0))
-            b_count = get_grid_orders(b_lot)
-            s_count = get_grid_orders(s_lot)
+            b_count = int(v.get('buy_cnt', 0))
+            s_count = int(v.get('sell_cnt', 0))
             
             raw_pair_profit = float(v.get('profit', 0.0))
             pair_dd_percent = abs((raw_pair_profit / raw_balance) * 100) if raw_balance > 0 else 0
             
+            # Настройка окраски светофора под эталонные просадки
             if pair_dd_percent <= 2:    tile_class = "t-green"; text_color = "#10b981"
             elif pair_dd_percent <= 10: tile_class = "t-yellow"; text_color = "#f59e0b"
             else:                       tile_class = "t-red"; text_color = "#ef4444"
@@ -250,6 +239,7 @@ def home():
         {account_details_html}
     </div>
     <script>
+        // Код полностью очищен от JS-сортировок, порядок задан на уровне Python
         function openPanel() {{ document.getElementById('sidePanel').classList.add('open'); }}
         function closePanel() {{ document.getElementById('sidePanel').classList.remove('open'); }}
     </script>
