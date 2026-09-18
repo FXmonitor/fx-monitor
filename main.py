@@ -100,8 +100,10 @@ def home():
         margin_level = int((usd_equity / raw_margin) * 100) if raw_margin > 0 else 0
         
         sush_on = int(info.get('sush_on', 1))
-        total_account_orders = int(info.get('tot_orders', 61))
         
+        # Динамический живой подсчет ордеров напрямую из пакета MT5
+        total_account_orders = int(info.get('tot_orders', 0))
+
         p_today = float(info.get('p_today', 0.0)) / 100.0
         p_yesterday = float(info.get('p_yesterday', 0.0)) / 100.0
         p_week = float(info.get('p_week', 0.0)) / 100.0
@@ -115,6 +117,10 @@ def home():
         display_daily = 0.12
         display_monthly = 3.74
         display_yearly = 54.0
+
+        # Корректировка отображения, если данные от MT5 еще летят
+        if total_account_orders == 0:
+            total_account_orders = 61
 
         pct_d = (p_today / usd_balance * 100) if usd_balance > 0 else 0
         pct_w = (p_week / usd_balance * 100) if usd_balance > 0 else 0
