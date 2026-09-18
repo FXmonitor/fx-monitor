@@ -48,7 +48,6 @@ def home():
         .tile-profit-box { margin-top: auto; text-align: center; line-height: 1.1; padding-bottom: 2px; }
         .tile-percent { font-size: 12px; font-weight: 900; letter-spacing: -0.3px; }
         
-        /* ШТОРКА ДОХОДОВ */
         .side-panel { position: fixed; top: 0; right: -100%; width: 100%; height: 100%; background: #000000; z-index: 2000; transition: right 0.3s ease; padding: 12px; box-sizing: border-box; overflow-y: auto; }
         .side-panel.open { right: 0; }
         .panel-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #1c1c1f; padding-bottom: 8px; margin-bottom: 10px; }
@@ -56,7 +55,6 @@ def home():
         .close-panel-btn { background: #141417; border: 1px solid #27272a; color: #ef4444; border-radius: 6px; padding: 4px 10px; font-size: 11px; font-weight: 700; cursor: pointer; }
         .income-title { font-size: 11px; font-weight: 800; color: #fff; margin: 10px 0 4px 0; text-transform: uppercase; border-left: 3px solid #3b82f6; padding-left: 5px; }
         
-        /* ГЛОБАЛЬНАЯ ВЕРХНЯЯ ТАБЛИЦА ПОРТФЕЛЯ (ОТСТУПЫ ПРЕЖНИЕ) */
         .report-table-top { width: 100%; border-collapse: collapse; font-size: 12px; text-align: left; margin-bottom: 12px; }
         .report-table-top th { color: #71717a; padding: 6px 2px; font-weight: 700; text-transform: uppercase; font-size: 9px; border-bottom: 1px solid #1c1c1f; }
         .report-table-top td { padding: 8px 2px; border-bottom: 1px solid #0d0d11; font-weight: 600; }
@@ -66,7 +64,6 @@ def home():
         .account-details-box { background: #09090b; border-radius: 12px; border: 1px solid #1c1c1f; padding: 8px; margin-bottom: 10px; }
         .roi-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 4px; font-size: 11px; margin-bottom: 4px; line-height: 1.2; }
         
-        /* НОВАЯ НИЖНЯЯ ТАБЛИЦА СЧЕТА: ЖЕСТКОЕ СЖАТИЕ ПО ВЕРТИКАЛИ */
         .report-table-bottom { width: 100%; border-collapse: collapse; font-size: 11px; text-align: left; margin-bottom: 0; line-height: 1.0; }
         .report-table-bottom th { color: #71717a; padding: 2px 2px; font-weight: 700; text-transform: uppercase; font-size: 8.5px; border-bottom: 1px solid #1c1c1f; }
         .report-table-bottom td { padding: 3px 2px; border-bottom: 1px solid #0d0d11; font-weight: 600; }
@@ -111,11 +108,21 @@ def home():
         p_week = float(info.get('p_week', 0.0)) / 100.0
         p_month = float(info.get('p_month', 0.0)) / 100.0
         
-        calc_deposit = 3101.90 if login == 5543921 else usd_balance * 4.7
-        calc_withdraw = 2800.00 if login == 5543921 else usd_balance * 4.2
-        calc_roi = 90.26 if login == 5543921 else 90.26
-        calc_rom = 106.26 if login == 5543921 else 106.26
-        calc_total_profit = 358.29 if login == 5543921 else usd_balance - usd_equity
+        # ЧИСТАЯ ЖИВАЯ МАТЕМАТИКА ИЗ ТЕРМИНАЛА (БЕЗ ЖЕСТКИХ ЗАГЛУШЕК)
+        calc_deposit = float(info.get('deposits', 0.0)) / 100.0
+        calc_withdraw = float(info.get('withdrawals', 0.0)) / 100.0
+        
+        if calc_deposit <= 0: calc_deposit = usd_balance  # защита от нуля
+        
+        # Формула истинного ROI и ROM на основе живой прибыли
+        calc_total_profit = usd_balance + calc_withdraw - calc_deposit
+        calc_roi = (calc_total_profit / calc_deposit) * 100 if calc_deposit > 0 else 0.0
+        calc_rom = (usd_balance / usd_equity * 100) if usd_equity > 0 else 100.0
+        
+        # Процентное соотношение периодов доходности к балансу
+        pct_d = (p_today / usd_balance * 100) if usd_balance > 0 else 0
+        pct_w = (p_week / usd_balance * 100) if usd_balance > 0 else 0
+        pct_m = (p_month / usd_balance * 100) if usd_balance > 0 else 0
 
         def sign(v): return f"+${v:.2f}" if v >= 0 else f"-${abs(v):.2f}"
         def col(v): return "#10b981" if v >= 0 else "#ef4444"
@@ -127,24 +134,22 @@ def home():
         elif dd_percent <= 10:  status_color = "#f59e0b"
         else:                   status_color = "#ef4444"
 
-        # Таблица верхнего портфеля (Оставляем те же широкие отступы)
         table_rows_html += f"""
-        <tr><td style="color:#71717a;">день</td><td style="color:#fff; font-weight:800;">$0.00 <span style="font-size:10px; color:#71717a;">(0%)</span></td><td style="color:#10b981;">$1.90 <span style="font-size:10px;">(+0.28%)</span></td></tr>
-        <tr><td style="color:#71717a;">неделя</td><td style="color:#10b981; font-weight:800;">$5.41 <span style="font-size:10px;">(+0.82%)</span></td><td style="color:#10b981;">$6.08 <span style="font-size:10px;">(+0.93%)</span></td></tr>
-        <tr><td style="color:#71717a;">месяц</td><td style="color:#10b981; font-weight:800;">$20.80 <span style="font-size:10px;">(+3.25%)</span></td><td style="color:#10b981;">$40.55 <span style="font-size:10px;">(+6.77%)</span></td></tr>
-        <tr style="border-top:1px solid #1c1c1f;"><td style="color:#71717a; font-weight:800;">всего</td><td style="color:#10b981; font-weight:900; font-size:12px;">${calc_total_profit:.2f} <span style="font-size:10px;">(+11.55%)</span></td><td style="color:#71717a;">-</td></tr>
+        <tr><td style="color:#71717a;">день</td><td style="color:#fff; font-weight:800;">{sign(p_today)} <span style="font-size:10px; color:#71717a;">({pct_d:.2f}%)</span></td><td style="color:#10b981;">{sign(p_yesterday)}</td></tr>
+        <tr><td style="color:#71717a;">неделя</td><td style="color:#10b981; font-weight:800;">{sign(p_week)} <span style="font-size:10px;">({pct_w:.2f}%)</span></td><td style="color:#10b981;">$6.08</td></tr>
+        <tr><td style="color:#71717a;">месяц</td><td style="color:#10b981; font-weight:800;">{sign(p_month)} <span style="font-size:10px;">({pct_m:.2f}%)</span></td><td style="color:#10b981;">$40.55</td></tr>
+        <tr style="border-top:1px solid #1c1c1f;"><td style="color:#71717a; font-weight:800;">всего</td><td style="color:#10b981; font-weight:900; font-size:12px;">{sign(calc_total_profit)} <span style="font-size:10px;">({calc_roi:.2f}%)</span></td><td style="color:#71717a;">-</td></tr>
         """
         
-        # ЛИЧНАЯ ТАБЛИЦА СЧЕТА С НОВЫМ ЖЕСТКИМ ВЕРТИКАЛЬНЫМ СЖАТИЕМ (КЛАСС report-table-bottom)
         account_details_html += f"""
         <div class="income-title">▼ Счёт: {login}</div>
         <div class="account-details-box">
             <div class="roi-grid">
-                <div>ежедневно: <b style="color:#10b981;">0.12%</b></div>
+                <div>ежедневно: <b style="color:#10b981;">{(pct_d):.2f}%</b></div>
                 <div style="text-align:right;">пополнения: <b style="color:#fff;">${calc_deposit:,.2f}</b></div>
-                <div>ежемесячно: <b style="color:#10b981;">3.74%</b></div>
+                <div>ежемесячно: <b style="color:#10b981;">{(pct_m):.2f}%</b></div>
                 <div style="text-align:right;">снятия: <b style="color:#fff;">${calc_withdraw:,.2f}</b></div>
-                <div>годовых: <b style="color:#10b981;">54%</b></div>
+                <div>годовых: <b style="color:#10b981;">{(pct_m * 12):.1f}%</b></div>
                 <div style="text-align:right;"><span class="roi-badge">ROI {calc_roi:.2f}%</span></div>
                 <div>&nbsp;</div>
                 <div style="text-align:right;"><span class="rom-badge">ROM {calc_rom:.2f}%</span></div>
@@ -152,10 +157,10 @@ def home():
             <table class="report-table-bottom" style="margin-top:2px; border-top: 1px solid #1c1c1f; padding-top:2px;">
                 <thead><tr style="color:#71717a; font-size:8.5px;"><th>текущий</th><th>прошлый</th></tr></thead>
                 <tbody>
-                    <tr><td style="color:#fff;">$0.00</td><td style="color:#10b981;">$1.90</td></tr>
-                    <tr><td style="color:#10b981;">$5.41</td><td style="color:#10b981;">$6.08</td></tr>
-                    <tr><td style="color:#10b981;">$20.80</td><td style="color:#10b981;">$40.55</td></tr>
-                    <tr style="border-top:1px solid #1c1c1f; font-weight:800;"><td style="color:#10b981;">${calc_total_profit:.2f}</td><td style="color:#71717a;">-</td></tr>
+                    <tr><td style="color:#fff;">{sign(p_today)}</td><td style="color:#10b981;">{sign(p_yesterday)}</td></tr>
+                    <tr><td style="color:#10b981;">{sign(p_week)}</td><td style="color:#10b981;">$6.08</td></tr>
+                    <tr><td style="color:#10b981;">{sign(p_month)}</td><td style="color:#10b981;">$40.55</td></tr>
+                    <tr style="border-top:1px solid #1c1c1f; font-weight:800;"><td style="color:#10b981;">{sign(calc_total_profit)}</td><td style="color:#71717a;">-</td></tr>
                 </tbody>
             </table>
         </div>
@@ -175,11 +180,9 @@ def home():
         
         for pair in ordered_keys:
             v = {}
-            actual_key = pair
             for k in pairs.keys():
                 if pair in k.upper():
                     v = pairs[k]
-                    actual_key = k
                     break
             
             b_lot = float(v.get('buy', 0.0))
@@ -198,7 +201,7 @@ def home():
 
             tiles_html += f"""
                     <div class="tile {tile_class}">
-                        <span class="tile-name">{actual_key[:6]}</span>
+                        <span class="tile-name">{pair}</span>
                         <div class="tile-dir" style="color:{'#10b981' if b_lot > 0 else '#4b5563'}">▲ {b_lot:.2f} /{b_count}</div>
                         <div class="tile-dir" style="color:{'#ef4444' if s_lot > 0 else '#4b5563'}">▼ {s_lot:.2f} /{s_count}</div>
                         <div class="tile-profit-box"><span class="tile-percent" style="color:{text_color};">{pct_display}</span></div>
@@ -248,7 +251,6 @@ def home():
     </div>
     <script>
         function openPanel() {{ document.getElementById('sidePanel').classList.add('open'); }}
-        function closeModal(login) {{ }}
         function closePanel() {{ document.getElementById('sidePanel').classList.remove('open'); }}
     </script>
     </body></html>
