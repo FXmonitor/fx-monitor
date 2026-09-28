@@ -1,53 +1,60 @@
-"""
-FX Monitor clone: две вкладки — «Расширенный» (view=pro) и «Доходы» (view=income).
-Робот MT5 шлёт JSON на POST /api/update. Формат полей — как в вашем старом main.py.
-Запуск: python main.py  (порт берётся из переменной PORT)
-"""
+"""FX Monitor clone (Расширенный + Доходы). Диагностика: /debug"""
 import os
 import json
 import time
 from datetime import datetime, timedelta
 from html import escape
+from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 app = FastAPI()
-accounts_data = {}   # login -> последний JSON от робота
-last_seen = {}       # login -> unix-время последнего пакета
+accounts_data = {}
+last_seen = {}
 
-# ============================ НАСТРОЙКИ ============================
 PAGE_TITLE = os.environ.get("FX_TITLE", "Аккаунт 4zF")
-API_KEY = os.environ.get("FX_API_KEY", "")            # пусто = без проверки ключа
-CENT = os.environ.get("FX_CENT", "1") == "1"          # робот шлёт центы -> делим на 100
-TZ_HOURS = float(os.environ.get("FX_TZ", "3"))        # часовой пояс для даты в карточке
+API_KEY = os.environ.get("FX_API_KEY", "")
+ADMIN_PASS = os.environ.get("FX_ADMIN_PASS", "")
+CENT = os.environ.get("FX_CENT", "1") == "1"
+TZ_HOURS = float(os.environ.get("FX_TZ", "3"))
+SETTINGS_FILE = Path(os.environ.get("FX_SETTINGS", "settings.json"))
 BRAND = "FX Monitor (10с)"
-RATES = {"USD": 1.0, "EUR": 0.92, "RUB": 90.0, "UAH": 41.5}   # курсы к USD (правьте вручную)
+RATES = {"USD": 1.0, "EUR": 0.92, "RUB": 90.0, "UAH": 41.5}
 try:
     RATES.update(json.loads(os.environ.get("FX_RATES", "{}")))
 except Exception:
     pass
 SYMS = {"USD": "$", "EUR": "€", "RUB": "₽", "UAH": "₴"}
-GREEN_AT, YELLOW_AT = 2.0, 10.0   # просадка до 2% — зелёный, до 10% — жёлтый, дальше красный
+GREEN_AT, YELLOW_AT = 1.0, 10.0
 
-# Данные, которых нет в пакете робота (в ДОЛЛАРАХ). Если робот пришлёт поля
-# deposits / withdrawals / p_prev_week / p_prev_month / name / since — они главнее.
-DEFAULT_META = {
-    "name": "KRYSTAL (CLASSIC +)",
-    "since": "26.11.2024",
-    "deposits": 3101.90,
-    "withdrawals": 2800.00,
-    "prev_week": 6.08,
-    "prev_month": 40.55,
+ORDER_KEYS = ("tot_orders", "total_orders", "orders_total", "orders", "positions", "open_orders")
+PERIOD_KEYS = {
+    "p_today": ("p_today", "p_day", "profit_today", "today"),
+    "p_yesterday": ("p_yesterday", "profit_yesterday", "yesterday"),
+    "p_week": ("p_week", "profit_week", "week"),
+    "p_month": ("p_month", "profit_month", "month"),
+    "p_prev_week": ("p_prev_week", "p_last_week", "prev_week", "last_week"),
+    "p_prev_month": ("p_prev_month", "p_last_month", "prev_month", "last_month"),
 }
-# Индивидуально по счетам (номер счёта берите на странице /api/data), пример:
-# ACCOUNT_META = {"12345678": {"name": "KING+", "since": "15.11.2024", "deposits": 4659,
-#                              "withdrawals": 1601, "prev_week": 0, "prev_month": 0, "order": 2}}
-ACCOUNT_META = {}
+DEP_KEYS = ("deposits", "deposit")
+WD_KEYS = ("withdrawals", "withdrawal")
+
+SETTINGS = {}
+try:
+    SETTINGS = json.loads(SETTINGS_FILE.read_text("utf-8"))
+except Exception:
+    SETTINGS = {}
 
 
-# ============================ ХЕЛПЕРЫ ============================
+def save_settings():
+    try:
+        SETTINGS_FILE.write_text(json.dumps(SETTINGS, ensure_ascii=False), "utf-8")
+    except Exception:
+        pass
+
+
 def num(x, d=0.0):
     try:
         v = float(x)
@@ -56,20 +63,38 @@ def num(x, d=0.0):
         return d
 
 
+def first_num(info, names):
+    for n in names:
+        v = info.get(n)
+        if v is None or isinstance(v, (dict, list, bool)):
+            continue
+        try:
+            f = float(v)
+            if f == f and abs(f) != float("inf"):
+                return f
+        except Exception:
+            pass
+    return None
+
+
 def fmt_money(v, cur):
+    if v is None:
+        return "—"
     if abs(v) < 0.005:
         v = 0.0
     return f"{SYMS.get(cur, '$')} {v:,.2f}"
 
 
 def fmt_pct(v, plus=True, zero="0%"):
+    if v is None:
+        return "—"
     if abs(v) < 0.005:
         return zero
     return f"{'+' if plus and v > 0 else ''}{v:.2f}%"
 
 
 def cls(v):
-    return "" if abs(v) < 0.005 else ("pos" if v > 0 else "neg")
+    return "" if v is None or abs(v) < 0.005 else ("pos" if v > 0 else "neg")
 
 
 def tone(p):
@@ -94,53 +119,69 @@ def now_local():
     return datetime.utcnow() + timedelta(hours=TZ_HOURS)
 
 
-# ============================ РАСЧЁТЫ ============================
+def login_sort_key(c):
+    s = str(c["login"])
+    return (0, int(s), "") if s.isdigit() else (1, 0, s)
+
+
 def calc(login, info, cur):
     r = RATES.get(cur, 1.0)
-    k = (0.01 if CENT else 1.0) * r
-    meta = {**DEFAULT_META, **ACCOUNT_META.get(str(login), {})}
+    kb = 0.01 if CENT else 1.0
+    S = SETTINGS.get(str(login), {})
 
-    def has(key):
-        return info.get(key) is not None
+    def usd(names):
+        v = first_num(info, names)
+        return None if v is None else v * kb
 
-    def cash(key, default=0.0):          # default — в долларах
-        return num(info[key]) * k if has(key) else num(default) * r
+    bal_u = usd(("balance",)) or 0.0
+    eq_u = usd(("equity",))
+    if eq_u is None:
+        eq_u = bal_u
+    mg_u = usd(("margin",)) or 0.0
+    bal, eq, mg = bal_u * r, eq_u * r, mg_u * r
 
-    bal = cash("balance")
-    eq = cash("equity") if has("equity") else bal
-    mg = cash("margin")
-    dep = cash("deposits", meta.get("deposits", 0))
-    wd = cash("withdrawals", meta.get("withdrawals", 0))
-    cur_v = {"day": cash("p_today"), "week": cash("p_week"), "month": cash("p_month")}
-    prev_v = {"day": cash("p_yesterday"),
-              "week": cash("p_prev_week", meta.get("prev_week", 0)),
-              "month": cash("p_prev_month", meta.get("prev_month", 0))}
+    dep_u = S["deposits"] if "deposits" in S else usd(DEP_KEYS)
+    wd_u = S["withdrawals"] if "withdrawals" in S else usd(WD_KEYS)
+    known = dep_u is not None
+    dep, wd = (dep_u or 0.0) * r, (wd_u or 0.0) * r
+
     per = {}
-    for key in ("day", "week", "month"):
-        c, p = cur_v[key], prev_v[key]
-        bc, bp = bal - c, bal - c - p
+    for key, ck, pk in (("day", "p_today", "p_yesterday"), ("week", "p_week", "p_prev_week"),
+                        ("month", "p_month", "p_prev_month")):
+        cu, pu = usd(PERIOD_KEYS[ck]), usd(PERIOD_KEYS[pk])
+        c = None if cu is None else cu * r
+        p = None if pu is None else pu * r
+        cc, pv = c or 0.0, p or 0.0
+        bc, bp = bal - cc, bal - cc - pv
         per[key] = dict(c=c, p=p, bc=bc, bp=bp,
-                        cp=c / bc * 100 if bc > 0 else 0.0,
-                        pp=p / bp * 100 if bp > 0 else 0.0)
+                        cp=None if c is None else (cc / bc * 100 if bc > 0 else 0.0),
+                        pp=None if p is None else (pv / bp * 100 if bp > 0 else 0.0))
 
-    total = bal + wd - dep
-    tp = total / dep * 100 if dep > 0 else 0.0
+    total = (bal + wd - dep) if known else None
+    tp = (total / dep * 100 if dep > 0 else 0.0) if known else None
     dd = min(0.0, eq - bal)
     ddp = dd / bal * 100 if bal > 0 else 0.0
     lvl = eq / mg * 100 if mg > 0 else None
 
-    since = str(info.get("since") or meta.get("since") or "")
+    since = str(S.get("since") or info.get("since") or "")
     sd = parse_date(since)
     months = max((datetime.now() - sd).days / 30.4, 1.0) if sd else 0.0
-    if has("monthly_pct"):
-        m = num(info["monthly_pct"])
+    mp = first_num(info, ("monthly_pct",))
+    if mp is not None:
+        m = mp
+    elif known and months > 0 and bal > 0:
+        m = total / bal * 100 / months
     else:
-        m = total / bal * 100 / months if (bal > 0 and months > 0) else 0.0
-    d = num(info["daily_pct"]) if has("daily_pct") else m / 30.4
-    if has("yearly_pct"):
-        y = num(info["yearly_pct"])
-    else:
+        m = None
+    dp = first_num(info, ("daily_pct",))
+    d = dp if dp is not None else (m / 30.4 if m is not None else None)
+    yp = first_num(info, ("yearly_pct",))
+    if yp is not None:
+        y = yp
+    elif m is not None:
         y = ((1 + m / 100) ** 12 - 1) * 100 if m > -100 else -100.0
+    else:
+        y = None
 
     syms = []
     pairs = info.get("pairs") or {}
@@ -151,7 +192,7 @@ def calc(login, info, cur):
             nm = str(key).upper()
             short = nm[:6] if len(nm) > 6 and nm[:6].isalpha() else nm
             bc_, sc_ = int(num(v.get("buy_cnt"))), int(num(v.get("sell_cnt")))
-            profit = num(v.get("profit")) * k
+            profit = num(v.get("profit")) * kb * r
             bid = v.get("bid")
             if bid is not None:
                 dg = int(num(v.get("digits"), 5 if "JPY" not in short else 3))
@@ -161,32 +202,46 @@ def calc(login, info, cur):
                              pct=profit / bal * 100 if bal > 0 else 0.0, bid=bid))
     syms.sort(key=lambda s: (not s["act"], s["name"]))
 
-    orders = int(num(info.get("tot_orders"))) or sum(s["bc"] + s["sc"] for s in syms)
+    pair_cnt = sum(s["bc"] + s["sc"] for s in syms)
+    orders = int(max(first_num(info, ORDER_KEYS) or 0, pair_cnt))
     bcol = {"green": "g", "red": "r", "yellow": "y"}.get(str(info.get("badge_color", "")).lower())
     if not bcol:
         bcol = "y" if int(num(info.get("sush_on"), 1)) == 1 else "g"
 
+    auto_name = str(info.get("name") or info.get("label") or f"Счёт {login}")
     ts = last_seen.get(login, time.time())
-    return dict(login=login, cur=cur, name=str(info.get("name") or meta.get("name") or f"#{login}"),
-                since=since, order=num(meta.get("order"), 0), broker=str(info.get("company") or ""),
-                ping=int(num(info.get("ping"))), bal=bal, eq=eq, dep=dep, wd=wd, per=per,
-                total=total, tp=tp, dd=dd, ddp=ddp, lvl=lvl, d=d, m=m, y=y,
-                roi=wd / dep * 100 if dep > 0 else 0.0,
-                rom=(wd + eq) / dep * 100 if dep > 0 else 0.0,
+    return dict(login=login, cur=cur, name=str(S.get("name") or auto_name), custom_name=str(S.get("name") or ""),
+                auto_name=auto_name, since=since, custom_since=str(S.get("since") or ""),
+                broker=str(info.get("company") or ""), ping=int(num(info.get("ping"))),
+                bal=bal, eq=eq, dep=dep, wd=wd, known=known,
+                dep_manual=S.get("deposits"), wd_manual=S.get("withdrawals"), dep_u=dep_u, wd_u=wd_u,
+                per=per, total=total, tp=tp, dd=dd, ddp=ddp, lvl=lvl, d=d, m=m, y=y,
+                roi=(wd / dep * 100) if known and dep > 0 else None,
+                rom=((wd + eq) / dep * 100) if known and dep > 0 else None,
                 syms=syms, orders=orders, bcol=bcol,
                 time=str(info.get("time") or now_local().strftime("%d.%m.%Y | %H:%M:%S")),
                 age=max(0, int(time.time() - ts)))
 
 
-# ============================ РЕНДЕР КАРТОЧЕК ============================
+def attrs(c):
+    def n(v):
+        return "" if v is None else f"{v:.2f}"
+    return (f'data-login="{escape(str(c["login"]))}" data-n="{escape(c["custom_name"])}" data-na="{escape(c["auto_name"])}" '
+            f'data-s="{escape(c["custom_since"])}" data-sa="{escape(c["since"])}" '
+            f'data-d="{n(c["dep_manual"])}" data-da="{n(c["dep_u"])}" data-w="{n(c["wd_manual"])}" data-wa="{n(c["wd_u"])}"')
+
+
 def age_html(c):
-    return (f'<span class="ag" data-age="{c["age"]}">{escape(BRAND)} | '
-            f'<span class="at"></span></span>')
+    return (f'<span class="ag" data-age="{c["age"]}">{escape(BRAND)} | <span class="at"></span></span>')
 
 
 def head_html(c):
-    return (f'<span class="name">{escape(c["name"])}</span> '
-            f'<span class="badge {c["bcol"]}">{c["orders"]}</span>')
+    return (f'<span class="name ed" title="Нажмите, чтобы переименовать">{escape(c["name"])}</span> '
+            f'<span class="badge {c["bcol"]}" title="Открыто ордеров">{c["orders"]}</span>')
+
+
+def since_html(c):
+    return f'работает с {escape(c["since"])}' if c["since"] else "&nbsp;"
 
 
 def tile_html(s):
@@ -203,48 +258,52 @@ def tile_html(s):
 
 def pro_card(c):
     cur, per = c["cur"], c["per"]
-    t = tone(c["ddp"])
-    ddcls = {"g": "pos", "y": "yel", "r": "neg"}[t]
+    ddcls = {"g": "pos", "y": "yel", "r": "neg"}[tone(c["ddp"])]
     if c["lvl"] is None:
         lvl, lcls = "—", ""
     else:
         lvl, lcls = f"{c['lvl']:.0f}%", ("pos" if c["lvl"] >= 100 else "neg")
 
-    def mini(label, o):
-        return (f'<div class="mini"><i>{label}</i><span class="{cls(o["c"] if label != "вчера" else o["p"])}">'
-                f'{fmt_money(o["c"] if label != "вчера" else o["p"], cur)}</span> '
-                f'({fmt_pct(o["cp"] if label != "вчера" else o["pp"])})</div>')
+    def mini(label, v, p):
+        return (f'<div class="mini"><i>{label}</i><span class="{cls(v)}">{fmt_money(v, cur)}</span>'
+                f'{"" if v is None else " (" + fmt_pct(p) + ")"}</div>')
 
-    tot = c["bal"] + c["eq"]
-    wa = min(75.0, max(25.0, c["bal"] / tot * 100)) if tot > 0 else 50.0
-    return f'''<div class="card">
-  <div class="h"><div>{head_html(c)}<div class="since">работает с {escape(c["since"])}</div></div>
-    <div class="dt">{escape(c["time"])}<span class="mi">☰</span></div></div>
+    dv = per["day"]["c"]
+    big = f'{fmt_money(dv, cur)}' + ('' if dv is None else f' <small>({fmt_pct(per["day"]["cp"])})</small>')
+    return f'''<div class="card" {attrs(c)}>
+  <div class="h"><div>{head_html(c)}<div class="since">{since_html(c)}</div></div>
+    <div class="dt">{escape(c["time"])}<span class="mi ed" title="Настройки счёта">☰</span></div></div>
   <div class="mid">
     <div class="lm">
       <div><div class="lb">просадка</div><div class="bigp {ddcls}">{c["ddp"]:.2f}%</div><div class="sub {ddcls}">{fmt_money(c["dd"], cur)}</div></div>
       <div><div class="lb">маржа</div><div class="bigp {lcls}">{lvl}</div></div>
     </div>
     <div class="day">
-      <div class="big">{fmt_money(per["day"]["c"], cur)} <small>({fmt_pct(per["day"]["cp"])})</small></div>
-      {mini("вчера", per["day"])}{mini("неделя", per["week"])}{mini("месяц", per["month"])}
+      <div class="big">{big}</div>
+      {mini("вчера", per["day"]["p"], per["day"]["pp"])}{mini("неделя", per["week"]["c"], per["week"]["cp"])}{mini("месяц", per["month"]["c"], per["month"]["cp"])}
     </div>
   </div>
-  <div class="bar"><div class="a" style="width:{wa:.1f}%">{fmt_money(c["bal"], cur)}</div><div class="b">{fmt_money(c["eq"], cur)}</div></div>
+  <div class="bar"><div>{fmt_money(c["bal"], cur)}</div><div>{fmt_money(c["eq"], cur)}</div></div>
   <div class="tiles">{"".join(tile_html(s) for s in c["syms"])}</div>
   <div class="foot"><span class="br">{escape(c["broker"])}{f" ({c['ping']}мс)" if c["ping"] else ""}</span>{age_html(c)}</div>
 </div>'''
 
 
+def cellv(v, p, cur, plus, zero):
+    if v is None:
+        return "<b>—</b>"
+    ptxt = "" if p is None else f" <em>({fmt_pct(p, plus, zero)})</em>"
+    return f'<b class="{cls(v)}">{fmt_money(v, cur)}</b>{ptxt}'
+
+
 def table_html(rows, cur, plus, zero_pct, total_v, total_p):
-    def cell(v, p):
-        return f'<b class="{cls(v)}">{fmt_money(v, cur)}</b> <em>({fmt_pct(p, plus, zero_pct)})</em>'
     names = {"day": "день", "week": "неделя", "month": "месяц"}
     h = '<table class="pt"><tr><th></th><th>текущий</th><th>прошлый</th></tr>'
     for k in ("day", "week", "month"):
         o = rows[k]
-        h += f'<tr><td>{names[k]}</td><td>{cell(o["c"], o["cp"])}</td><td>{cell(o["p"], o["pp"])}</td></tr>'
-    h += f'<tr><td>всего</td><td>{cell(total_v, total_p)}</td><td></td></tr></table>'
+        h += (f'<tr><td>{names[k]}</td><td>{cellv(o["c"], o["cp"], cur, plus, zero_pct)}</td>'
+              f'<td>{cellv(o["p"], o["pp"], cur, plus, zero_pct)}</td></tr>')
+    h += f'<tr><td>всего</td><td>{cellv(total_v, total_p, cur, plus, zero_pct)}</td><td></td></tr></table>'
     return h
 
 
@@ -252,17 +311,22 @@ def income_card(c):
     cur = c["cur"]
 
     def pc(v, dec=2):
+        if v is None:
+            return "<b>—</b>"
         v = 0.0 if abs(v) < 0.005 else v
         return f'<b class="{cls(v)}">{v:.{dec}f}%</b>'
 
-    return f'''<div class="card">
+    def badge(kind, v):
+        return f'<span class="{kind}">{kind.upper()} <b>{"—" if v is None else f"{v:.2f}%"}</b></span>'
+
+    return f'''<div class="card" {attrs(c)}>
   <div class="ig">
-    <div>{head_html(c)}</div><div class="r2 dt">{escape(c["time"])}<span class="mi">☰</span></div>
-    <div class="since">работает с {escape(c["since"])}</div><div class="r2 bal">{fmt_money(c["bal"], cur)}</div>
-    <div>ежедневно {pc(c["d"])}</div><div class="r2"><span class="lb2">пополнения</span> <span class="lnk">{fmt_money(c["dep"], cur)}</span></div>
-    <div>ежемесячно {pc(c["m"])}</div><div class="r2"><span class="lb2">снятия</span> <span class="lnk">{fmt_money(c["wd"], cur)}</span></div>
-    <div>годовых {pc(c["y"], 0)}</div><div class="r2"><span class="roi">ROI <b>{c["roi"]:.2f}%</b></span></div>
-    <div></div><div class="r2"><span class="rom">ROM <b>{c["rom"]:.2f}%</b></span></div>
+    <div>{head_html(c)}</div><div class="r2 dt">{escape(c["time"])}<span class="mi ed" title="Настройки счёта">☰</span></div>
+    <div class="since">{since_html(c)}</div><div class="r2 bal">{fmt_money(c["bal"], cur)}</div>
+    <div>ежедневно {pc(c["d"])}</div><div class="r2"><span class="lb2">пополнения</span> <span class="lnk">{fmt_money(c["dep"] if c["known"] else None, cur)}</span></div>
+    <div>ежемесячно {pc(c["m"])}</div><div class="r2"><span class="lb2">снятия</span> <span class="lnk">{fmt_money(c["wd"] if c["known"] else None, cur)}</span></div>
+    <div>годовых {pc(c["y"], 0)}</div><div class="r2">{badge("roi", c["roi"])}</div>
+    <div></div><div class="r2">{badge("rom", c["rom"])}</div>
   </div>
   {table_html(c["per"], cur, True, "0%", c["total"], c["tp"])}
   <div class="foot"><span></span>{age_html(c)}</div>
@@ -272,23 +336,28 @@ def income_card(c):
 def total_card(cs, cur):
     rows = {}
     for k in ("day", "week", "month"):
-        c = sum(x["per"][k]["c"] for x in cs)
-        p = sum(x["per"][k]["p"] for x in cs)
-        bc = sum(x["per"][k]["bc"] for x in cs if abs(x["per"][k]["c"]) >= 0.005)
-        bp = sum(x["per"][k]["bp"] for x in cs if abs(x["per"][k]["p"]) >= 0.005)
-        rows[k] = dict(c=c, p=p, cp=c / bc * 100 if bc > 0 else 0.0, pp=p / bp * 100 if bp > 0 else 0.0)
+        kc = [x for x in cs if x["per"][k]["c"] is not None]
+        kp = [x for x in cs if x["per"][k]["p"] is not None]
+        c = sum(x["per"][k]["c"] for x in kc) if kc else None
+        p = sum(x["per"][k]["p"] for x in kp) if kp else None
+        bc = sum(x["per"][k]["bc"] for x in kc if abs(x["per"][k]["c"]) >= 0.005)
+        bp = sum(x["per"][k]["bp"] for x in kp if abs(x["per"][k]["p"]) >= 0.005)
+        rows[k] = dict(c=c, p=p, cp=None if c is None else (c / bc * 100 if bc > 0 else 0.0),
+                       pp=None if p is None else (p / bp * 100 if bp > 0 else 0.0))
     bal = sum(x["bal"] for x in cs)
-    dep = sum(x["dep"] for x in cs)
-    tot = sum(x["total"] for x in cs)
+    kn = [x for x in cs if x["known"]]
+    dep = sum(x["dep"] for x in kn)
+    tot = sum(x["total"] for x in kn) if kn else None
+    tp = None if tot is None else (tot / dep * 100 if dep > 0 else 0.0)
     return (f'<div class="card tot"><div class="ttl"><b>Общий баланс</b><span class="bal">{fmt_money(bal, cur)}</span></div>'
-            f'{table_html(rows, cur, False, "0.00%", tot, tot / dep * 100 if dep > 0 else 0.0)}</div>')
+            f'{table_html(rows, cur, False, "0.00%", tot, tp)}</div>')
 
 
 def render_body(view, cur):
     if not accounts_data:
         return '<div class="empty">Ожидание данных от MT5… (POST /api/update)</div>'
     cs = [calc(login, info, cur) for login, info in list(accounts_data.items())]
-    cs.sort(key=lambda c: (c["order"], c["name"], str(c["login"])))
+    cs.sort(key=login_sort_key)
     if view == "income":
         return (f'<div class="grid">{total_card(cs, cur)}</div>'
                 f'<div class="grid" style="margin-top:30px">{"".join(income_card(c) for c in cs)}</div>'
@@ -305,7 +374,6 @@ def norm_cur(c):
     return c if c in RATES else "USD"
 
 
-# ============================ API ============================
 @app.post("/api/update")
 async def update_account(request: Request):
     try:
@@ -328,6 +396,70 @@ def api_data():
     return accounts_data
 
 
+@app.get("/api/settings")
+def get_settings():
+    return SETTINGS
+
+
+@app.post("/api/settings")
+async def set_settings(request: Request):
+    try:
+        data = json.loads((await request.body()).decode("utf-8-sig", "ignore"))
+        if ADMIN_PASS and str(data.get("pass", "")) != ADMIN_PASS:
+            return JSONResponse({"status": "error", "detail": "bad pass"}, status_code=403)
+        login = str(data.get("login", "")).strip()
+        if not login:
+            return {"status": "error"}
+        s = {}
+        for key in ("name", "since"):
+            v = str(data.get(key) or "").strip()
+            if v:
+                s[key] = v[:60]
+        for key in ("deposits", "withdrawals"):
+            v = str(data.get(key) if data.get(key) is not None else "").strip()
+            v = v.replace(",", ".").replace(" ", "").replace("$", "")
+            if v:
+                try:
+                    s[key] = float(v)
+                except Exception:
+                    pass
+        if s:
+            SETTINGS[login] = s
+        else:
+            SETTINGS.pop(login, None)
+        save_settings()
+        return {"status": "success"}
+    except Exception:
+        return {"status": "error"}
+
+
+@app.get("/debug", response_class=HTMLResponse)
+def debug():
+    checks = [("balance", ("balance",)), ("equity", ("equity",)), ("margin", ("margin",)),
+              ("ордера (tot_orders)", ORDER_KEYS)]
+    checks += [(k, v) for k, v in PERIOD_KEYS.items()]
+    checks += [("deposits", DEP_KEYS), ("withdrawals", WD_KEYS)]
+    out = ['<meta charset="utf-8"><body style="font:14px Arial;padding:16px;background:#f4f6fa"><h2>Диагностика: что прислал робот</h2>']
+    if not accounts_data:
+        out.append("<p>Робот пока ничего не прислал.</p>")
+    for login, info in accounts_data.items():
+        age = int(time.time() - last_seen.get(login, time.time()))
+        out.append(f"<h3>Счёт {escape(str(login))} — пакет {age} сек. назад</h3>"
+                   "<table border=1 cellpadding=5 style='border-collapse:collapse;background:#fff'>")
+        for title, names in checks:
+            v = first_num(info, names)
+            color = "#1a9c55" if v is not None else "#d01040"
+            text = f"OK: {v}" if v is not None else "НЕТ ДАННЫХ"
+            out.append(f"<tr><td>{escape(title)}</td><td style='color:{color}'>{text}</td></tr>")
+        pairs = info.get("pairs")
+        pc = len(pairs) if isinstance(pairs, dict) else 0
+        color = "#1a9c55" if pc else "#d01040"
+        out.append(f"<tr><td>pairs (пары)</td><td style='color:{color}'>{pc} шт.</td></tr></table>")
+        out.append(f"<p style='color:#555'>Все поля в пакете: {escape(', '.join(map(str, info.keys())))}</p>")
+    out.append("</body>")
+    return "".join(out)
+
+
 @app.get("/fragment", response_class=HTMLResponse)
 def fragment(view: str = "pro", cur: str = "USD"):
     return render_body(norm_view(view), norm_cur(cur))
@@ -341,15 +473,16 @@ def home(user: str = "", view: str = "pro", cur: str = "USD"):
             .replace("__CUR__", c).replace("__BODY__", render_body(v, c)))
 
 
-# ============================ СТРАНИЦА ============================
 PAGE = r"""<!doctype html>
 <html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>__TITLE__</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600;700&display=swap" rel="stylesheet">
 <style>
 :root{--green:#28c76f;--red:#dc1e4b;--blue:#3d5fd6;--yellow:#e0a800}
 *{box-sizing:border-box}
-body{margin:0;font:13px/1.35 "Segoe UI","Open Sans",Roboto,Arial,sans-serif;color:#2b2f36;
+body{margin:0;font:13px/1.35 "Open Sans","Segoe UI",Roboto,Arial,sans-serif;color:#2b2f36;
   background:linear-gradient(135deg,#e2eaf2,#d5dfea);min-height:100vh}
 .wrap{padding:8px 8px 30px}
 .top,.top2{display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap}
@@ -362,7 +495,7 @@ h1 svg{width:20px;height:20px;fill:#444}
 .spin svg{animation:sp .8s linear}
 @keyframes sp{to{transform:rotate(360deg)}}
 .dd{position:relative;display:flex;align-items:center;gap:8px}
-.ddbtn{background:#1d3a78;color:#fff;border:0;border-radius:3px;padding:8px 14px;font-weight:600;cursor:pointer;font-size:13px}
+.ddbtn{background:#1d3a78;color:#fff;border:0;border-radius:3px;padding:8px 14px;font-weight:600;cursor:pointer;font-size:13px;font-family:inherit}
 .ddbtn:after{content:"";display:inline-block;margin-left:8px;border:4px solid transparent;border-top-color:#fff;vertical-align:-2px}
 .ddm{display:none;position:absolute;top:36px;left:0;background:#fff;border-radius:3px;box-shadow:0 3px 12px rgba(0,0,0,.25);z-index:9;min-width:150px}
 .ddm.open{display:block}
@@ -377,11 +510,13 @@ h1 svg{width:20px;height:20px;fill:#444}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,440px),1fr));gap:30px;margin:16px 0 0}
 .card{background:#fff;border-radius:3px;box-shadow:0 1px 4px rgba(40,60,90,.25);padding:14px 16px 8px;position:relative}
 .name{font-weight:700;font-size:13px;color:#222}
+.ed{cursor:pointer}
+.name.ed:hover{text-decoration:underline dotted}
 .badge{display:inline-block;min-width:22px;padding:0 6px;margin-left:4px;border-radius:12px;color:#fff;font-weight:600;font-size:12px;text-align:center}
 .g{background:var(--green)}.r{background:var(--red)}.y{background:#f6b90f}
 .since{color:#aaa;font-size:11px}
 .dt{color:#888;font-size:10.5px;text-align:right}
-.mi{color:#888;font-size:11px;display:block;text-align:right;line-height:1}
+.mi{color:#888;font-size:13px;display:block;text-align:right;line-height:1}
 .pos{color:var(--green)}.neg{color:var(--red)}.yel{color:var(--yellow)}
 .h{display:flex;justify-content:space-between}
 .mid{display:flex;justify-content:space-between;margin-top:2px;gap:8px}
@@ -393,16 +528,16 @@ h1 svg{width:20px;height:20px;fill:#444}
 .day .big small{font-size:18px;color:#666}
 .mini{font-size:11.5px;color:#444;white-space:nowrap}.mini i{font-style:normal;color:#999;font-size:10px;margin-right:3px}
 .bar{display:flex;height:31px;margin-top:6px;color:#fff;font-weight:700;font-size:16px}
-.bar div{display:flex;align-items:center;justify-content:center;white-space:nowrap;overflow:hidden}
-.bar .a{background:#4169e1}.bar .b{background:#1aa7ff;flex:1}
+.bar div{flex:1;display:flex;align-items:center;justify-content:center;white-space:nowrap;overflow:hidden}
+.bar div:first-child{background:#4169e1}.bar div:last-child{background:#1aa7ff}
 .tiles{display:flex;flex-wrap:wrap;gap:3px;margin-top:10px;min-height:20px}
-.t{width:64px;text-align:center;color:#fff;background:#3ec27b}
-.t.y{background:#f6b90f}.t.r{background:var(--red)}.t.n{background:#eee;color:#333}
-.t .s{color:#1b1b1b;font-weight:700;font-size:10px;padding:2px 0}
-.t .p{background:#3a3f45;color:#fff;font-size:10.5px;padding:1px 0;margin:0 1px}
-.t .v{font-size:13px;font-weight:700;padding:3px 0 1px}
-.t .l{font-size:9.5px;line-height:1.3;padding-bottom:2px}
-.t.n .l{color:#555}
+.t{width:66px;text-align:center;color:#fff;background:#3dc47e;border-radius:1px;overflow:hidden}
+.t.y{background:#f4b32a}.t.r{background:var(--red)}.t.n{background:#ececec;color:#333}
+.t .s{color:#1e2226;font-weight:700;font-size:11px;line-height:1.2;padding:4px 0 3px}
+.t .p{background:#33383e;color:#fff;font-size:11px;font-weight:600;line-height:1.3;padding:1px 0;margin:0 2px}
+.t .v{font-size:15px;font-weight:700;line-height:1.2;padding:5px 0 3px;white-space:nowrap;letter-spacing:-.2px}
+.t .l{font-size:10.5px;font-weight:600;line-height:1.35;padding:3px 0 4px;background:rgba(0,0,0,.09);white-space:nowrap}
+.t.n .s{color:#222}.t.n .v{color:#222}.t.n .l{color:#555;background:transparent}
 .foot{display:flex;justify-content:space-between;margin-top:8px;font-size:9.5px}
 .foot .br{color:#999}.foot .ag{color:#5fd39a}.foot .ag.stale{color:var(--red)}
 .tot{background:linear-gradient(180deg,#adc3f3 0%,#dde8f8 45%,#d9f6e8 100%);padding-bottom:12px}
@@ -426,6 +561,16 @@ table.pt{width:100%;border-collapse:collapse;margin-top:10px}
 .pt td em{font-style:normal;color:#444}
 .beta{margin:26px 0 0;font-size:11px;color:#3f7cf0}
 .empty{margin:40px 8px;color:#777}
+.mdl{display:none;position:fixed;inset:0;background:rgba(20,30,50,.45);z-index:50;align-items:center;justify-content:center}
+.mdl.open{display:flex}
+.mbox{background:#fff;border-radius:4px;padding:18px 20px;width:min(92vw,360px);box-shadow:0 8px 30px rgba(0,0,0,.35)}
+.mbox h3{margin:0 0 6px;font-size:15px}
+.mbox label{display:block;color:#666;font-size:12px;margin-top:9px}
+.mbox input{width:100%;padding:7px 9px;border:1px solid #c5cedd;border-radius:3px;font-size:14px;margin-top:3px;font-family:inherit}
+.mbtn{display:flex;gap:8px;margin-top:14px}
+.mbtn button{flex:1;padding:9px;border:0;border-radius:3px;cursor:pointer;font-weight:600;font-family:inherit}
+#m_save{background:#1d3a78;color:#fff}#m_cancel{background:#e6ebf3}
+.mhint{color:#999;font-size:11px;margin-top:8px}
 </style></head><body><div class="wrap">
 <div class="top">
   <h1><svg viewBox="0 0 24 24"><path d="M12 12a5 5 0 1 0 0-10 5 5 0 0 0 0 10zm0 2c-4 0-8 2-8 5v3h16v-3c0-3-4-5-8-5z"/></svg>__TITLE__</h1>
@@ -438,19 +583,28 @@ table.pt{width:100%;border-collapse:collapse;margin-top:10px}
 </div>
 <div id="app">__BODY__</div>
 </div>
+<div class="mdl" id="mdl"><div class="mbox">
+  <h3>Настройки счёта <span id="mlog"></span></h3>
+  <label>Название<input id="f_name"></label>
+  <label>Работает с (дд.мм.гггг)<input id="f_since"></label>
+  <label>Пополнения, $ (в долларах)<input id="f_dep" inputmode="decimal"></label>
+  <label>Снятия, $ (в долларах)<input id="f_wd" inputmode="decimal"></label>
+  <div class="mbtn"><button id="m_save">Сохранить</button><button id="m_cancel">Отмена</button></div>
+  <div class="mhint">Пустое поле = брать данные от робота автоматически</div>
+</div></div>
 <script>
-let VIEW="__VIEW__", CUR="__CUR__";
+let VIEW="__VIEW__", CUR="__CUR__", EDIT=null;
 const q=new URLSearchParams(location.search);
 if(!q.get('cur')&&localStorage.getItem('fxcur'))CUR=localStorage.getItem('fxcur');
 const CURS=[['USD','<svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18"/></svg>'],['USD','$'],['EUR','€'],['RUB','₽'],['UAH','₴']];
+const $=id=>document.getElementById(id);
 function drawCur(){
-  const el=document.getElementById('cur');
-  el.innerHTML=CURS.map(([k,l],i)=>`<button data-c="${k}" class="${(CUR===k&&i>0)||(CUR==='USD'&&i===0)?'on':''}">${l}</button>`).join('');
-  el.querySelectorAll('button').forEach(b=>b.onclick=()=>{CUR=b.dataset.c;localStorage.setItem('fxcur',CUR);sync();drawCur();load();});
+  $('cur').innerHTML=CURS.map(([k,l],i)=>`<button data-c="${k}" class="${(CUR===k&&i>0)||(CUR==='USD'&&i===0)?'on':''}">${l}</button>`).join('');
+  $('cur').querySelectorAll('button').forEach(b=>b.onclick=()=>{CUR=b.dataset.c;localStorage.setItem('fxcur',CUR);sync();drawCur();load();});
 }
 function sync(){
-  document.getElementById('ddb').textContent=VIEW==='pro'?'Расширенный':'Доходы';
-  document.getElementById('newb').style.display=VIEW==='pro'?'':'none';
+  $('ddb').textContent=VIEW==='pro'?'Расширенный':'Доходы';
+  $('newb').style.display=VIEW==='pro'?'':'none';
   const u=new URL(location);u.searchParams.set('view',VIEW);u.searchParams.set('cur',CUR);history.replaceState(null,'',u);
 }
 function stamp(){document.querySelectorAll('.ag').forEach(e=>e.dataset.base=Date.now());tick();}
@@ -459,16 +613,57 @@ function tick(){document.querySelectorAll('.ag').forEach(e=>{
   e.querySelector('.at').textContent=s<60?s+' сек. назад':s<3600?Math.floor(s/60)+' мин. назад':Math.floor(s/3600)+' ч. назад';
   e.classList.toggle('stale',s>60);});}
 async function load(){
-  const b=document.getElementById('rf');b.classList.add('spin');setTimeout(()=>b.classList.remove('spin'),800);
+  $('rf').classList.add('spin');setTimeout(()=>$('rf').classList.remove('spin'),800);
   try{const r=await fetch('/fragment?view='+VIEW+'&cur='+CUR,{cache:'no-store'});
-    if(r.ok){document.getElementById('app').innerHTML=await r.text();stamp();}}catch(e){}
+    if(r.ok){$('app').innerHTML=await r.text();stamp();}}catch(e){}
 }
-document.getElementById('ddb').onclick=e=>{e.stopPropagation();document.getElementById('ddm').classList.toggle('open');};
+async function saveSettings(p){
+  p.pass=sessionStorage.getItem('fxpass')||'';
+  try{
+    const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});
+    if(r.status===403){const w=prompt('Пароль на изменение настроек:');if(w){sessionStorage.setItem('fxpass',w);return saveSettings(p);}return false;}
+    const j=await r.json();return j.status==='success';
+  }catch(e){return false;}
+}
+document.addEventListener('click',e=>{
+  const t=e.target.closest('.ed');if(!t)return;
+  const c=t.closest('[data-login]');if(!c)return;
+  const d=c.dataset;EDIT=d.login;
+  $('mlog').textContent='#'+EDIT;
+  $('f_name').value=d.n||'';$('f_name').placeholder=d.na||'';
+  $('f_since').value=d.s||'';$('f_since').placeholder=d.sa||'например 15.11.2024';
+  $('f_dep').value=d.d||'';$('f_dep').placeholder=d.da?('авто: '+d.da):'не задано';
+  $('f_wd').value=d.w||'';$('f_wd').placeholder=d.wa?('авто: '+d.wa):'не задано';
+  $('mdl').classList.add('open');$('f_name').focus();
+});
+$('m_cancel').onclick=()=>$('mdl').classList.remove('open');
+$('mdl').addEventListener('click',e=>{if(e.target===$('mdl'))$('mdl').classList.remove('open');});
+$('m_save').onclick=async()=>{
+  const p={login:EDIT,name:$('f_name').value,since:$('f_since').value,deposits:$('f_dep').value,withdrawals:$('f_wd').value};
+  if(await saveSettings(Object.assign({},p))){
+    if(p.name||p.since||p.deposits||p.withdrawals)localStorage.setItem('fxset_'+EDIT,JSON.stringify(p));
+    else localStorage.removeItem('fxset_'+EDIT);
+    $('mdl').classList.remove('open');load();
+  }else alert('Не удалось сохранить');
+};
+async function restore(){
+  try{
+    const s=await (await fetch('/api/settings',{cache:'no-store'})).json();let ch=false;
+    for(let i=0;i<localStorage.length;i++){
+      const k=localStorage.key(i);if(!k||!k.startsWith('fxset_'))continue;
+      const login=k.slice(6);if(s[login])continue;
+      const p=JSON.parse(localStorage.getItem(k));p.login=login;
+      if(await saveSettings(p))ch=true;
+    }
+    if(ch)load();
+  }catch(e){}
+}
+$('ddb').onclick=e=>{e.stopPropagation();$('ddm').classList.toggle('open');};
 document.querySelectorAll('#ddm a').forEach(a=>a.onclick=()=>{VIEW=a.dataset.v;sync();load();});
-document.addEventListener('click',()=>document.getElementById('ddm').classList.remove('open'));
-document.getElementById('rf').onclick=load;
-document.getElementById('fs').onclick=()=>document.fullscreenElement?document.exitFullscreen():document.documentElement.requestFullscreen();
-drawCur();sync();stamp();setInterval(tick,1000);setInterval(load,3000);
+document.addEventListener('click',()=>$('ddm').classList.remove('open'));
+$('rf').onclick=load;
+$('fs').onclick=()=>document.fullscreenElement?document.exitFullscreen():document.documentElement.requestFullscreen();
+drawCur();sync();stamp();restore();setInterval(tick,1000);setInterval(load,3000);
 if(CUR!=='__CUR__')load();
 </script></body></html>"""
 
