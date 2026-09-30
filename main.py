@@ -1,4 +1,4 @@
-"""FX Monitor clone (Расширенный + Доходы). Диагностика: /debug"""
+"""FX Monitor clone (Расширенный + Доходы + Telegram). Диагностика: /debug"""
 import os
 import json
 import time
@@ -138,9 +138,9 @@ def tone(p):
 
 
 def parse_date(s):
-    for f in ("%d.%m.%Y", "%Y-%m-%d", "%Y.%m.%d"):
+    for f in ("%d.%m.%Y", "%Y-%m-%d", "%Y.%m.%d", "%d.%m.%y"):
         try:
-            return datetime.strptime(str(s)[:10], f)
+            return datetime.strptime(str(s).strip()[:10], f)
         except Exception:
             pass
     return None
@@ -329,7 +329,7 @@ def pro_card(c):
       <div><div class="lb">маржа</div><div class="bigp {lcls}">{lvl}</div></div>
     </div>
     <div class="day">
-      <div class="big">{big}</div>
+      <div class="big {cls(dv)}">{big}</div>
       {mini("вчера", per["day"]["p"], per["day"]["pp"])}{mini("неделя", per["week"]["c"], per["week"]["cp"])}{mini("месяц", per["month"]["c"], per["month"]["cp"])}
     </div>
   </div>
@@ -413,8 +413,7 @@ def render_body(view, cur):
     cs.sort(key=login_sort_key)
     if view == "income":
         return (f'<div class="grid">{total_card(cs, cur)}</div>'
-                f'<div class="grid" style="margin-top:30px">{"".join(income_card(c) for c in cs)}</div>'
-                f'<div class="beta">Доходы Beta-2</div>')
+                f'<div class="grid" style="margin-top:30px">{"".join(income_card(c) for c in cs)}</div>')
     return f'<div class="grid">{"".join(pro_card(c) for c in cs)}</div>'
 
 
@@ -429,6 +428,141 @@ def norm_mode(c):
 
 def real_cur(mode):
     return "USD" if mode == "ORIG" else mode
+
+
+TG_TOKEN = os.environ.get("TG_TOKEN", "").strip()
+TG_CHAT = os.environ.get("TG_CHAT", "").strip()
+TG_DD_START = 30
+TG_DD_STEP = 10
+TG_STALE_SEC = 300
+TG_GRACE_SEC = 60
+START_TIME = time.time()
+TG_STATE = {}
+TG_LAST = {"ok": None, "err": "", "time": ""}
+
+
+def tg_send(text):
+    if not (TG_TOKEN and TG_CHAT):
+        TG_LAST.update(ok=False, err="не заданы TG_TOKEN / TG_CHAT")
+        return False
+    try:
+        body = json.dumps({"chat_id": TG_CHAT, "text": text, "parse_mode": "HTML",
+                           "disable_web_page_preview": True}).encode("utf-8")
+        req = urllib.request.Request(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage", data=body,
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            ok = bool(json.loads(r.read().decode("utf-8")).get("ok"))
+        TG_LAST.update(ok=ok, err="" if ok else "Telegram ответил ошибкой",
+                       time=now_local().strftime("%d.%m %H:%M:%S"))
+        return ok
+    except Exception as e:
+        TG_LAST.update(ok=False, err=str(e).replace(TG_TOKEN, "***")[:200],
+                       time=now_local().strftime("%d.%m %H:%M:%S"))
+        return False
+
+
+def tg_status_text():
+    if not (TG_TOKEN and TG_CHAT):
+        return "не настроен (нет TG_TOKEN / TG_CHAT)"
+    if TG_LAST["ok"] is None:
+        return "настроен, отправок ещё не было"
+    if TG_LAST["ok"]:
+        return f"работает, последняя отправка {TG_LAST['time']}"
+    return f"ОШИБКА: {TG_LAST['err']}"
+
+
+def acc_name(login, info):
+    S = SETTINGS.get(str(login), {})
+    return str(S.get("name") or info.get("name") or info.get("label") or f"Счёт {login}")
+
+
+def next_dd_level(dd_abs, last):
+    raw = int(dd_abs // TG_DD_STEP) * TG_DD_STEP if dd_abs >= TG_DD_START else 0
+    if raw > last:
+        return raw
+    if raw < last and dd_abs < last - 1.0:
+        return raw
+    return last
+
+
+def tg_check():
+    now = time.time()
+    grace = now - START_TIME < TG_GRACE_SEC
+    msgs = []
+    for login, info in list(accounts_data.items()):
+        fresh = login not in TG_STATE
+        st = TG_STATE.setdefault(login, {"algo": None, "sush": None, "conn": None, "dd": 0, "stale": False})
+        silent = grace or fresh
+        tag = f"<b>{escape(acc_name(login, info))}</b> (#{escape(str(login))})"
+
+        stale = (now - last_seen.get(login, now)) > TG_STALE_SEC
+        if stale != st["stale"]:
+            st["stale"] = stale
+            if not silent:
+                msgs.append(f"⚠️ {tag}: нет данных от робота уже {TG_STALE_SEC // 60} мин." if stale
+                            else f"✅ {tag}: связь с роботом восстановлена.")
+        if stale:
+            continue
+
+        cv = first_num(info, ("connected",))
+        if cv is not None:
+            c = cv != 0
+            if st["conn"] is not None and c != st["conn"] and not silent:
+                msgs.append(f"✅ {tag}: терминал снова на связи с брокером." if c
+                            else f"⚠️ {tag}: терминал потерял связь с брокером.")
+            st["conn"] = c
+
+        av = first_num(info, ("algo",))
+        if av is not None:
+            a = av != 0
+            if st["algo"] is not None and a != st["algo"] and not silent:
+                msgs.append(f"🟢 {tag}: алготрейдинг включён." if a else f"🔴 {tag}: алготрейдинг ВЫКЛЮЧЕН.")
+            st["algo"] = a
+
+        sv = first_num(info, ("sush_on",))
+        if sv is not None:
+            s = sv != 0
+            if st["sush"] is not None and s != st["sush"] and not silent:
+                msgs.append(f"🟡 {tag}: счёт ушёл на сушку." if s else f"🟢 {tag}: счёт вышел с сушки.")
+            st["sush"] = s
+
+        bal, eq = first_num(info, ("balance",)), first_num(info, ("equity",))
+        if bal and bal > 0 and eq is not None:
+            dd_abs = max(0.0, (bal - eq) / bal * 100)
+            new = next_dd_level(dd_abs, st["dd"])
+            if new != st["dd"]:
+                if not silent:
+                    if new == 0:
+                        msgs.append(f"🟢 {tag}: просадка снизилась ниже {TG_DD_START}% (сейчас {dd_abs:.1f}%).")
+                    elif new > st["dd"]:
+                        msgs.append(f"🔻 {tag}: просадка достигла {new}% (сейчас {dd_abs:.1f}%).")
+                st["dd"] = new
+    for m in msgs:
+        tg_send(m)
+    return msgs
+
+
+def tg_worker():
+    while True:
+        try:
+            if TG_TOKEN and TG_CHAT:
+                tg_check()
+        except Exception:
+            pass
+        time.sleep(10)
+
+
+def start_tg_thread():
+    threading.Thread(target=tg_worker, daemon=True).start()
+
+
+@app.get("/tg-test", response_class=HTMLResponse)
+def tg_test(p: str = ""):
+    head = '<meta charset="utf-8"><body style="font:15px Arial;padding:20px">'
+    if ADMIN_PASS and p != ADMIN_PASS:
+        return head + "Нужен пароль: /tg-test?p=ПАРОЛЬ"
+    ok = tg_send("✅ Проверка связи: бот FX Monitor подключён.")
+    return head + ("Отправлено. Проверьте Telegram." if ok else "ОШИБКА: " + escape(tg_status_text()))
 
 
 @app.post("/api/update")
@@ -500,12 +634,14 @@ async def set_settings(request: Request):
 def debug():
     checks = [("balance", ("balance",)), ("equity", ("equity",)), ("margin", ("margin",)),
               ("ордера (tot_orders)", ORDER_KEYS), ("algo (алготрейдинг)", ("algo",)),
-              ("sush_on (сушка)", ("sush_on",))]
+              ("sush_on (сушка)", ("sush_on",)),
+              ("connected (связь терминала)", ("connected",))]
     checks += [(k, v) for k, v in PERIOD_KEYS.items()]
     checks += [("deposits", DEP_KEYS), ("withdrawals", WD_KEYS)]
     out = ['<meta charset="utf-8"><body style="font:14px Arial;padding:16px;background:#f4f6fa"><h2>Диагностика: что прислал робот</h2>']
     rate_txt = f"1 $ = {RATES.get('RUB', 0):.2f} ₽ ({RATE_INFO['src']}" + (f", {RATE_INFO['time']}" if RATE_INFO["time"] else "") + ")"
     out.append(f"<p>Курс рубля: <b>{escape(rate_txt)}</b></p>")
+    out.append(f"<p>Telegram: <b>{escape(tg_status_text())}</b></p>")
     if not accounts_data:
         out.append("<p>Робот пока ничего не прислал.</p>")
     for login, info in accounts_data.items():
@@ -591,11 +727,12 @@ h1 svg{width:20px;height:20px;fill:#444}
 .h{display:flex;justify-content:space-between}
 .mid{display:flex;justify-content:space-between;margin-top:2px;gap:8px}
 .lm{display:flex;gap:16px}.lm .lb{color:#999;font-size:13px}
-.bigp{font-size:25px;font-weight:600;line-height:1.15}
+.bigp{font-size:25px;font-weight:700;line-height:1.15}
 .sub{font-size:12px}
 .day{text-align:right}
 .day .big{font-size:24px;color:#222;line-height:1.1;white-space:nowrap}
 .day .big small{font-size:18px;color:#666}
+.day .big.pos{color:var(--green)}.day .big.neg{color:var(--red)}
 .mini{font-size:11.5px;color:#444;white-space:nowrap}.mini i{font-style:normal;color:#999;font-size:10px;margin-right:3px}
 .bar{display:flex;height:31px;margin-top:6px;color:#fff;font-weight:700;font-size:16px}
 .bar div{flex:1;display:flex;align-items:center;justify-content:center;white-space:nowrap;overflow:hidden}
@@ -605,10 +742,11 @@ h1 svg{width:20px;height:20px;fill:#444}
 .t.y{background:#f4b32a}.t.r{background:var(--red)}.t.n{background:#ececec}
 .t .s{color:#1e2226;font-weight:700;font-size:11px;line-height:1.2;padding:4px 0 3px}
 .t .p{background:#33383e;color:#fff;font-size:11px;font-weight:600;line-height:1.3;padding:1px 0;margin:0 3px;border-radius:3px}
-.t .v{color:#fff;font-size:15px;font-weight:700;line-height:1.2;padding:5px 0 3px;white-space:nowrap;letter-spacing:-.2px}
+.t .v{color:#111;font-size:15px;font-weight:700;line-height:1.2;padding:5px 0 3px;white-space:nowrap;letter-spacing:-.2px}
 .t .l{color:#1e2226;font-size:10.5px;font-weight:600;line-height:1.35;padding:3px 0 4px;background:rgba(0,0,0,.09);border-top:1px solid rgba(0,0,0,.12);white-space:nowrap}
+.t.r .v{color:#fff}
 .t.r .l{color:#fff;background:rgba(0,0,0,.14);border-top-color:rgba(255,255,255,.3)}
-.t.n .v{color:#333}.t.n .l{color:#555;background:transparent;border-top-color:rgba(0,0,0,.08)}
+.t.n .v{color:#111}.t.n .l{color:#555;background:transparent;border-top-color:rgba(0,0,0,.08)}
 .foot{display:flex;justify-content:space-between;margin-top:auto;padding-top:10px;font-size:9.5px}
 .foot .br{color:#999}.foot .ag{color:#5fd39a}.foot .ag.stale{color:var(--red)}
 .tot{background:linear-gradient(180deg,#adc3f3 0%,#dde8f8 45%,#d9f6e8 100%);padding-bottom:12px}
@@ -630,7 +768,6 @@ table.pt{width:100%;border-collapse:collapse;margin-top:10px}
 .pt td b{font-weight:700;color:#222}
 .pt td b.pos{color:var(--green)}.pt td b.neg{color:var(--red)}
 .pt td em{font-style:normal;color:#444}
-.beta{margin:26px 0 0;font-size:11px;color:#3f7cf0}
 .empty{margin:40px 8px;color:#777}
 .mdl{display:none;position:fixed;inset:0;background:rgba(20,30,50,.45);z-index:50;align-items:center;justify-content:center}
 .mdl.open{display:flex}
@@ -754,6 +891,7 @@ if(CUR!=='__CUR__')load();
 
 
 start_rate_thread()
+start_tg_thread()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
