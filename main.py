@@ -1,5 +1,6 @@
-"""FX Monitor clone (Расширенный + Доходы + Telegram). Диагностика: /debug"""
+"""FX Monitor clone (Расширенный + Доходы). Telegram вынесен в tg.py. Диагностика: /debug"""
 import os
+import sys
 import json
 import time
 import threading
@@ -11,6 +12,13 @@ from pathlib import Path
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
+
+try:
+    import tg
+    TG_ERR = ""
+except Exception as _e:
+    tg = None
+    TG_ERR = str(_e)
 
 app = FastAPI()
 accounts_data = {}
@@ -30,7 +38,8 @@ try:
 except Exception:
     pass
 SYMS = {"USD": "$", "RUB": "₽"}
-GREEN_AT, YELLOW_AT = 1.0, 10.0
+GREEN_AT, YELLOW_AT = 1.0, 10.0          # пороги плиток пар (в %)
+DD_GREEN_BELOW, DD_YELLOW_BELOW = 10.0, 30.0   # пороги крупной просадки на карточке
 
 ORDER_KEYS = ("tot_orders", "total_orders", "orders_total", "orders", "positions", "open_orders")
 PERIOD_KEYS = {
@@ -133,8 +142,15 @@ def cls(v):
 
 
 def tone(p):
+    """Цвет плитки пары."""
     d = -p if p < 0 else 0.0
     return "g" if d <= GREEN_AT else ("y" if d <= YELLOW_AT else "r")
+
+
+def dd_tone(p):
+    """Цвет крупной просадки на карточке: до 10 зелёный, 10-30 жёлтый, от 30 красный."""
+    d = -p if p < 0 else 0.0
+    return "g" if d < DD_GREEN_BELOW else ("y" if d < DD_YELLOW_BELOW else "r")
 
 
 def parse_date(s):
@@ -224,18 +240,20 @@ def calc(login, info, cur):
         for key, v in pairs.items():
             if not isinstance(v, dict):
                 continue
+            bc_, sc_ = int(num(v.get("buy_cnt"))), int(num(v.get("sell_cnt")))
+            if bc_ + sc_ == 0:
+                continue                      # пары без ордеров не показываем
             nm = str(key).upper()
             short = nm[:6] if len(nm) > 6 and nm[:6].isalpha() else nm
-            bc_, sc_ = int(num(v.get("buy_cnt"))), int(num(v.get("sell_cnt")))
             profit = num(v.get("profit")) * kb * r
             bid = v.get("bid")
             if bid is not None:
                 dg = int(num(v.get("digits"), 5 if "JPY" not in short else 3))
                 bid = f"{num(bid):.{dg}f}"
             syms.append(dict(name=short, buy=num(v.get("buy")), sell=num(v.get("sell")),
-                             bc=bc_, sc=sc_, act=(bc_ + sc_) > 0,
+                             bc=bc_, sc=sc_, act=True,
                              pct=profit / bal * 100 if bal > 0 else 0.0, bid=bid))
-    syms.sort(key=lambda s: (not s["act"], s["name"]))
+    syms.sort(key=lambda s: s["name"])
 
     pair_cnt = sum(s["bc"] + s["sc"] for s in syms)
     tot_o = first_num(info, ORDER_KEYS)
@@ -294,11 +312,8 @@ def since_html(c):
 
 
 def tile_html(s):
-    if not s["act"]:
-        t, pct = "n", "0%"
-    else:
-        t = tone(s["pct"])
-        pct = "0%" if abs(s["pct"]) < 0.005 else f"{s['pct']:.2f}%"
+    t = tone(s["pct"])
+    pct = "0%" if abs(s["pct"]) < 0.005 else f"{s['pct']:.2f}%"
     bid = f'<div class="p">{s["bid"]}</div>' if s["bid"] else ""
     return (f'<div class="t {t}"><div class="s">{escape(s["name"])}</div>{bid}'
             f'<div class="v">{pct}</div>'
@@ -307,7 +322,7 @@ def tile_html(s):
 
 def pro_card(c):
     cur, per = c["cur"], c["per"]
-    ddcls = {"g": "pos", "y": "yel", "r": "neg"}[tone(c["ddp"])]
+    ddcls = {"g": "pos", "y": "yel", "r": "neg"}[dd_tone(c["ddp"])]
     if c["lvl"] is None:
         lvl, lcls = "—", ""
     else:
@@ -430,141 +445,6 @@ def real_cur(mode):
     return "USD" if mode == "ORIG" else mode
 
 
-TG_TOKEN = os.environ.get("TG_TOKEN", "").strip()
-TG_CHAT = os.environ.get("TG_CHAT", "").strip()
-TG_DD_START = 30
-TG_DD_STEP = 10
-TG_STALE_SEC = 300
-TG_GRACE_SEC = 60
-START_TIME = time.time()
-TG_STATE = {}
-TG_LAST = {"ok": None, "err": "", "time": ""}
-
-
-def tg_send(text):
-    if not (TG_TOKEN and TG_CHAT):
-        TG_LAST.update(ok=False, err="не заданы TG_TOKEN / TG_CHAT")
-        return False
-    try:
-        body = json.dumps({"chat_id": TG_CHAT, "text": text, "parse_mode": "HTML",
-                           "disable_web_page_preview": True}).encode("utf-8")
-        req = urllib.request.Request(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage", data=body,
-                                     headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=10) as r:
-            ok = bool(json.loads(r.read().decode("utf-8")).get("ok"))
-        TG_LAST.update(ok=ok, err="" if ok else "Telegram ответил ошибкой",
-                       time=now_local().strftime("%d.%m %H:%M:%S"))
-        return ok
-    except Exception as e:
-        TG_LAST.update(ok=False, err=str(e).replace(TG_TOKEN, "***")[:200],
-                       time=now_local().strftime("%d.%m %H:%M:%S"))
-        return False
-
-
-def tg_status_text():
-    if not (TG_TOKEN and TG_CHAT):
-        return "не настроен (нет TG_TOKEN / TG_CHAT)"
-    if TG_LAST["ok"] is None:
-        return "настроен, отправок ещё не было"
-    if TG_LAST["ok"]:
-        return f"работает, последняя отправка {TG_LAST['time']}"
-    return f"ОШИБКА: {TG_LAST['err']}"
-
-
-def acc_name(login, info):
-    S = SETTINGS.get(str(login), {})
-    return str(S.get("name") or info.get("name") or info.get("label") or f"Счёт {login}")
-
-
-def next_dd_level(dd_abs, last):
-    raw = int(dd_abs // TG_DD_STEP) * TG_DD_STEP if dd_abs >= TG_DD_START else 0
-    if raw > last:
-        return raw
-    if raw < last and dd_abs < last - 1.0:
-        return raw
-    return last
-
-
-def tg_check():
-    now = time.time()
-    grace = now - START_TIME < TG_GRACE_SEC
-    msgs = []
-    for login, info in list(accounts_data.items()):
-        fresh = login not in TG_STATE
-        st = TG_STATE.setdefault(login, {"algo": None, "sush": None, "conn": None, "dd": 0, "stale": False})
-        silent = grace or fresh
-        tag = f"<b>{escape(acc_name(login, info))}</b> (#{escape(str(login))})"
-
-        stale = (now - last_seen.get(login, now)) > TG_STALE_SEC
-        if stale != st["stale"]:
-            st["stale"] = stale
-            if not silent:
-                msgs.append(f"⚠️ {tag}: нет данных от робота уже {TG_STALE_SEC // 60} мин." if stale
-                            else f"✅ {tag}: связь с роботом восстановлена.")
-        if stale:
-            continue
-
-        cv = first_num(info, ("connected",))
-        if cv is not None:
-            c = cv != 0
-            if st["conn"] is not None and c != st["conn"] and not silent:
-                msgs.append(f"✅ {tag}: терминал снова на связи с брокером." if c
-                            else f"⚠️ {tag}: терминал потерял связь с брокером.")
-            st["conn"] = c
-
-        av = first_num(info, ("algo",))
-        if av is not None:
-            a = av != 0
-            if st["algo"] is not None and a != st["algo"] and not silent:
-                msgs.append(f"🟢 {tag}: алготрейдинг включён." if a else f"🔴 {tag}: алготрейдинг ВЫКЛЮЧЕН.")
-            st["algo"] = a
-
-        sv = first_num(info, ("sush_on",))
-        if sv is not None:
-            s = sv != 0
-            if st["sush"] is not None and s != st["sush"] and not silent:
-                msgs.append(f"🟡 {tag}: счёт ушёл на сушку." if s else f"🟢 {tag}: счёт вышел с сушки.")
-            st["sush"] = s
-
-        bal, eq = first_num(info, ("balance",)), first_num(info, ("equity",))
-        if bal and bal > 0 and eq is not None:
-            dd_abs = max(0.0, (bal - eq) / bal * 100)
-            new = next_dd_level(dd_abs, st["dd"])
-            if new != st["dd"]:
-                if not silent:
-                    if new == 0:
-                        msgs.append(f"🟢 {tag}: просадка снизилась ниже {TG_DD_START}% (сейчас {dd_abs:.1f}%).")
-                    elif new > st["dd"]:
-                        msgs.append(f"🔻 {tag}: просадка достигла {new}% (сейчас {dd_abs:.1f}%).")
-                st["dd"] = new
-    for m in msgs:
-        tg_send(m)
-    return msgs
-
-
-def tg_worker():
-    while True:
-        try:
-            if TG_TOKEN and TG_CHAT:
-                tg_check()
-        except Exception:
-            pass
-        time.sleep(10)
-
-
-def start_tg_thread():
-    threading.Thread(target=tg_worker, daemon=True).start()
-
-
-@app.get("/tg-test", response_class=HTMLResponse)
-def tg_test(p: str = ""):
-    head = '<meta charset="utf-8"><body style="font:15px Arial;padding:20px">'
-    if ADMIN_PASS and p != ADMIN_PASS:
-        return head + "Нужен пароль: /tg-test?p=ПАРОЛЬ"
-    ok = tg_send("✅ Проверка связи: бот FX Monitor подключён.")
-    return head + ("Отправлено. Проверьте Telegram." if ok else "ОШИБКА: " + escape(tg_status_text()))
-
-
 @app.post("/api/update")
 async def update_account(request: Request):
     try:
@@ -630,6 +510,22 @@ async def set_settings(request: Request):
         return {"status": "error"}
 
 
+def tg_line():
+    if tg is None:
+        return "tg.py не загрузился — уведомления выключены" + (f" ({TG_ERR})" if TG_ERR else "")
+    try:
+        return tg.status_text()
+    except Exception as e:
+        return f"ошибка: {e}"
+
+
+def weekend_line():
+    try:
+        return "да (связь не проверяем)" if tg.is_weekend() else "нет"
+    except Exception:
+        return "неизвестно"
+
+
 @app.get("/debug", response_class=HTMLResponse)
 def debug():
     checks = [("balance", ("balance",)), ("equity", ("equity",)), ("margin", ("margin",)),
@@ -641,7 +537,8 @@ def debug():
     out = ['<meta charset="utf-8"><body style="font:14px Arial;padding:16px;background:#f4f6fa"><h2>Диагностика: что прислал робот</h2>']
     rate_txt = f"1 $ = {RATES.get('RUB', 0):.2f} ₽ ({RATE_INFO['src']}" + (f", {RATE_INFO['time']}" if RATE_INFO["time"] else "") + ")"
     out.append(f"<p>Курс рубля: <b>{escape(rate_txt)}</b></p>")
-    out.append(f"<p>Telegram: <b>{escape(tg_status_text())}</b></p>")
+    out.append(f"<p>Telegram: <b>{escape(tg_line())}</b></p>")
+    out.append(f"<p>Выходные сейчас: <b>{escape(weekend_line())}</b></p>")
     if not accounts_data:
         out.append("<p>Робот пока ничего не прислал.</p>")
     for login, info in accounts_data.items():
@@ -730,8 +627,8 @@ h1 svg{width:20px;height:20px;fill:#444}
 .bigp{font-size:25px;font-weight:700;line-height:1.15}
 .sub{font-size:12px}
 .day{text-align:right}
-.day .big{font-size:24px;color:#222;line-height:1.1;white-space:nowrap}
-.day .big small{font-size:18px;color:#666}
+.day .big{font-size:24px;font-weight:700;color:#222;line-height:1.1;white-space:nowrap}
+.day .big small{font-size:18px;font-weight:600;color:#666}
 .day .big.pos{color:var(--green)}.day .big.neg{color:var(--red)}
 .mini{font-size:11.5px;color:#444;white-space:nowrap}.mini i{font-style:normal;color:#999;font-size:10px;margin-right:3px}
 .bar{display:flex;height:31px;margin-top:6px;color:#fff;font-weight:700;font-size:16px}
@@ -739,14 +636,13 @@ h1 svg{width:20px;height:20px;fill:#444}
 .bar div:first-child{background:#4169e1}.bar div:last-child{background:#1aa7ff}
 .tiles{display:flex;flex-wrap:wrap;gap:4px;margin-top:10px;min-height:20px}
 .t{width:66px;text-align:center;color:#fff;background:#3dc47e;border-radius:6px;overflow:hidden;padding-top:1px}
-.t.y{background:#f4b32a}.t.r{background:var(--red)}.t.n{background:#ececec}
+.t.y{background:#f4b32a}.t.r{background:var(--red)}
 .t .s{color:#1e2226;font-weight:700;font-size:11px;line-height:1.2;padding:4px 0 3px}
 .t .p{background:#33383e;color:#fff;font-size:11px;font-weight:600;line-height:1.3;padding:1px 0;margin:0 3px;border-radius:3px}
 .t .v{color:#111;font-size:15px;font-weight:700;line-height:1.2;padding:5px 0 3px;white-space:nowrap;letter-spacing:-.2px}
 .t .l{color:#1e2226;font-size:10.5px;font-weight:600;line-height:1.35;padding:3px 0 4px;background:rgba(0,0,0,.09);border-top:1px solid rgba(0,0,0,.12);white-space:nowrap}
 .t.r .v{color:#fff}
 .t.r .l{color:#fff;background:rgba(0,0,0,.14);border-top-color:rgba(255,255,255,.3)}
-.t.n .v{color:#111}.t.n .l{color:#555;background:transparent;border-top-color:rgba(0,0,0,.08)}
 .foot{display:flex;justify-content:space-between;margin-top:auto;padding-top:10px;font-size:9.5px}
 .foot .br{color:#999}.foot .ag{color:#5fd39a}.foot .ag.stale{color:var(--red)}
 .tot{background:linear-gradient(180deg,#adc3f3 0%,#dde8f8 45%,#d9f6e8 100%);padding-bottom:12px}
@@ -891,7 +787,12 @@ if(CUR!=='__CUR__')load();
 
 
 start_rate_thread()
-start_tg_thread()
+if tg is not None:
+    try:
+        tg.init(sys.modules[__name__], app)
+    except Exception as _e:
+        TG_ERR = str(_e)
+        tg = None
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
