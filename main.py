@@ -1,4 +1,4 @@
-"""FX Monitor clone (Расширенный + Доходы). Telegram вынесен в tg.py. Диагностика: /debug"""
+"""GTrade monitor (Расширенный / Доходы / Простой / Сводка). Диагностика: /debug"""
 import os
 import sys
 import json
@@ -11,25 +11,26 @@ from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 try:
-    import tg
-    TG_ERR = ""
-except Exception as _e:
-    tg = None
-    TG_ERR = str(_e)
+    import notify          # будущий модуль уведомлений; пока файла нет — ничего не происходит
+except Exception:
+    notify = None
 
 app = FastAPI()
 accounts_data = {}
 last_seen = {}
 
-PAGE_TITLE = os.environ.get("FX_TITLE", "Аккаунт 4zF")
+PAGE_TITLE = os.environ.get("FX_TITLE", "GTrade")
 API_KEY = os.environ.get("FX_API_KEY", "")
 ADMIN_PASS = os.environ.get("FX_ADMIN_PASS", "")
 CENT = os.environ.get("FX_CENT", "1") == "1"
 TZ_HOURS = float(os.environ.get("FX_TZ", "3"))
 SETTINGS_FILE = Path(os.environ.get("FX_SETTINGS", "settings.json"))
+BASE_DIR = Path(__file__).resolve().parent
+LOGO_NAMES = (("logo.png", "image/png"), ("logo.jpg", "image/jpeg"),
+              ("logo.jpeg", "image/jpeg"), ("logo.webp", "image/webp"))
 BRAND = "FX Monitor (10с)"
 RATES = {"USD": 1.0, "RUB": 90.0}
 RATE_INFO = {"ok": False, "time": "", "src": "запасной курс"}
@@ -38,8 +39,8 @@ try:
 except Exception:
     pass
 SYMS = {"USD": "$", "RUB": "₽"}
-GREEN_AT, YELLOW_AT = 1.0, 10.0          # пороги плиток пар (в %)
-DD_GREEN_BELOW, DD_YELLOW_BELOW = 10.0, 30.0   # пороги крупной просадки на карточке
+GREEN_AT, YELLOW_AT = 2.0, 10.0                 # пороги плиток пар (в %): до 2 зелёный, 2-10 жёлтый, выше красный
+DD_GREEN_BELOW, DD_YELLOW_BELOW = 10.0, 30.0    # пороги крупной просадки на карточке
 
 ORDER_KEYS = ("tot_orders", "total_orders", "orders_total", "orders", "positions", "open_orders")
 PERIOD_KEYS = {
@@ -142,7 +143,7 @@ def cls(v):
 
 
 def tone(p):
-    """Цвет плитки пары."""
+    """Цвет плитки пары: до 2% зелёный, 2-10% жёлтый, выше 10% красный."""
     d = -p if p < 0 else 0.0
     return "g" if d <= GREEN_AT else ("y" if d <= YELLOW_AT else "r")
 
@@ -320,13 +321,16 @@ def tile_html(s):
             f'<div class="l">▲{lots(s["buy"])} /{s["bc"]}<br>▼{lots(s["sell"])} /{s["sc"]}</div></div>')
 
 
+def margin_view(c):
+    if c["lvl"] is None:
+        return "—", ""
+    return f"{c['lvl']:.0f}%", ("pos" if c["lvl"] >= 100 else "neg")
+
+
 def pro_card(c):
     cur, per = c["cur"], c["per"]
     ddcls = {"g": "pos", "y": "yel", "r": "neg"}[dd_tone(c["ddp"])]
-    if c["lvl"] is None:
-        lvl, lcls = "—", ""
-    else:
-        lvl, lcls = f"{c['lvl']:.0f}%", ("pos" if c["lvl"] >= 100 else "neg")
+    lvl, lcls = margin_view(c)
 
     def mini(label, v, p):
         return (f'<div class="mini"><i>{label}</i><span class="{cls(v)}">{fmt_money(v, cur)}</span>'
@@ -351,6 +355,54 @@ def pro_card(c):
   <div class="bar"><div>{fmt_money(c["bal"], cur)}</div><div>{fmt_money(c["eq"], cur)}</div></div>
   <div class="tiles">{"".join(tile_html(s) for s in c["syms"])}</div>
   <div class="foot"><span class="br">{escape(c["broker"])}{ping}</span>{age_html(c)}</div>
+</div>'''
+
+
+def simple_card(c):
+    cur, per = c["cur"], c["per"]
+    ddcls = {"g": "pos", "y": "yel", "r": "neg"}[dd_tone(c["ddp"])]
+    lvl, lcls = margin_view(c)
+    dv, dp = per["day"]["c"], per["day"]["cp"]
+    big = fmt_pct(dp)
+    sub = "" if dv is None else fmt_money(dv, cur)
+    return f'''<div class="card sc" {attrs(c)}>
+  <div class="h"><div>{head_html(c)}</div>
+    <div class="dt">{escape(c["time"])}<span class="mi ed" title="Настройки счёта">☰</span></div></div>
+  <div class="srow">
+    <div class="sl">
+      <div><span class="lb">просадка</span><div class="sv {ddcls}">{c["ddp"]:.2f}%</div></div>
+      <div><span class="lb">маржа</span><div class="sv {lcls}">{lvl}</div></div>
+    </div>
+    <div class="sr"><div class="sbig {cls(dv)}">{big}</div><div class="ssub">{sub}</div></div>
+  </div>
+  <div class="foot"><span></span>{age_html(c)}</div>
+</div>'''
+
+
+def summary_html(cs, cur):
+    bal = sum(x["bal"] for x in cs)
+    eq = sum(x["eq"] for x in cs)
+    tv = [x["per"]["day"]["c"] for x in cs if x["per"]["day"]["c"] is not None]
+    today = sum(tv) if tv else None
+    date = now_local().strftime("%d.%m.%Y")
+    rows = ""
+    for c in cs:
+        ddcls = {"g": "pos", "y": "yel", "r": "neg"}[dd_tone(c["ddp"])]
+        lvl, lcls = margin_view(c)
+        dp = c["per"]["day"]["cp"]
+        dv = c["per"]["day"]["c"]
+        rows += (f'<tr {attrs(c)}><td>{head_html(c)}</td>'
+                 f'<td class="{ddcls}">{c["ddp"]:.2f}%</td>'
+                 f'<td class="{lcls}">{lvl}</td>'
+                 f'<td class="{cls(dv)}">{fmt_pct(dp)}</td></tr>')
+    return f'''<div class="card sumcard">
+  <div class="sh">
+    <div class="row">баланс <b class="c1">{fmt_money(bal, cur)}</b></div>
+    <div class="row">эквити <b class="c2">{fmt_money(eq, cur)}</b></div>
+    <div class="row">сегодня <i>({date})</i> <b class="{cls(today)}">{fmt_money(today, cur)}</b></div>
+    <div class="cnt">кол-во счетов: <b>{len(cs)}</b></div>
+  </div>
+  <table class="st"><tr><th>счёт</th><th>просадка</th><th>маржа</th><th>доход</th></tr>{rows}</table>
 </div>'''
 
 
@@ -429,11 +481,20 @@ def render_body(view, cur):
     if view == "income":
         return (f'<div class="grid">{total_card(cs, cur)}</div>'
                 f'<div class="grid" style="margin-top:30px">{"".join(income_card(c) for c in cs)}</div>')
+    if view == "simple":
+        return f'<div class="grid sg">{"".join(simple_card(c) for c in cs)}</div>'
+    if view == "summary":
+        return f'<div class="grid sgrid">{summary_html(cs, cur)}</div>'
     return f'<div class="grid">{"".join(pro_card(c) for c in cs)}</div>'
 
 
+VIEWS = {"pro": "pro", "income": "income", "inc": "income", "доходы": "income",
+         "simple": "simple", "простой": "simple",
+         "summary": "summary", "svodka": "summary", "сводка": "summary"}
+
+
 def norm_view(v):
-    return "income" if str(v).lower() in ("income", "inc", "dohody", "доходы") else "pro"
+    return VIEWS.get(str(v).lower(), "pro")
 
 
 def norm_mode(c):
@@ -443,6 +504,19 @@ def norm_mode(c):
 
 def real_cur(mode):
     return "USD" if mode == "ORIG" else mode
+
+
+@app.get("/logo")
+def logo():
+    for name, mime in LOGO_NAMES:
+        p = BASE_DIR / name
+        try:
+            if p.is_file():
+                return Response(p.read_bytes(), media_type=mime,
+                                headers={"Cache-Control": "public, max-age=3600"})
+        except Exception:
+            pass
+    return Response("logo not found (загрузите logo.png рядом с main.py)", status_code=404)
 
 
 @app.post("/api/update")
@@ -510,22 +584,6 @@ async def set_settings(request: Request):
         return {"status": "error"}
 
 
-def tg_line():
-    if tg is None:
-        return "tg.py не загрузился — уведомления выключены" + (f" ({TG_ERR})" if TG_ERR else "")
-    try:
-        return tg.status_text()
-    except Exception as e:
-        return f"ошибка: {e}"
-
-
-def weekend_line():
-    try:
-        return "да (связь не проверяем)" if tg.is_weekend() else "нет"
-    except Exception:
-        return "неизвестно"
-
-
 @app.get("/debug", response_class=HTMLResponse)
 def debug():
     checks = [("balance", ("balance",)), ("equity", ("equity",)), ("margin", ("margin",)),
@@ -537,8 +595,8 @@ def debug():
     out = ['<meta charset="utf-8"><body style="font:14px Arial;padding:16px;background:#f4f6fa"><h2>Диагностика: что прислал робот</h2>']
     rate_txt = f"1 $ = {RATES.get('RUB', 0):.2f} ₽ ({RATE_INFO['src']}" + (f", {RATE_INFO['time']}" if RATE_INFO["time"] else "") + ")"
     out.append(f"<p>Курс рубля: <b>{escape(rate_txt)}</b></p>")
-    out.append(f"<p>Telegram: <b>{escape(tg_line())}</b></p>")
-    out.append(f"<p>Выходные сейчас: <b>{escape(weekend_line())}</b></p>")
+    has_logo = any((BASE_DIR / n).is_file() for n, _ in LOGO_NAMES)
+    out.append(f"<p>Логотип: <b>{'найден' if has_logo else 'НЕ найден (загрузите logo.png рядом с main.py)'}</b></p>")
     if not accounts_data:
         out.append("<p>Робот пока ничего не прислал.</p>")
     for login, info in accounts_data.items():
@@ -585,21 +643,37 @@ PAGE = r"""<!doctype html>
 body{margin:0;font:13px/1.35 "Open Sans","Segoe UI",Roboto,Arial,sans-serif;color:#2b2f36;
   background:linear-gradient(135deg,#e2eaf2,#d5dfea);min-height:100vh}
 .wrap{padding:8px 8px 30px}
-.top,.top2{display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap}
-.top2{margin-top:8px}
-h1{margin:0;font-size:20px;font-weight:700;color:#444;display:flex;align-items:center;gap:8px}
-h1 svg{width:20px;height:20px;fill:#444}
+.hero{position:relative;border-radius:10px;padding:12px 16px 14px;box-shadow:0 4px 18px rgba(8,20,60,.35)}
+.hero-bg{position:absolute;inset:0;border-radius:10px;overflow:hidden;
+  background:
+    radial-gradient(520px 200px at 82% 50%,rgba(0,229,255,.30),transparent 62%),
+    radial-gradient(380px 180px at 8% 0%,rgba(90,70,255,.40),transparent 62%),
+    linear-gradient(120deg,#050b1f 0%,#0a1a3d 55%,#04101f 100%)}
+.hero-bg:before{content:"";position:absolute;inset:0;
+  background-image:linear-gradient(rgba(0,229,255,.09) 1px,transparent 1px),linear-gradient(90deg,rgba(0,229,255,.09) 1px,transparent 1px);
+  background-size:26px 26px;
+  -webkit-mask-image:linear-gradient(90deg,transparent 0%,#000 45%,#000 100%);mask-image:linear-gradient(90deg,transparent 0%,#000 45%,#000 100%)}
+.hero-bg:after{content:"";position:absolute;left:0;right:0;bottom:0;height:2px;
+  background:linear-gradient(90deg,transparent,#00e5ff 25%,#28c76f 50%,#ff2d55 75%,transparent)}
+.logo{position:absolute;right:14%;top:50%;transform:translateY(-50%);width:200px;height:200px;object-fit:cover;
+  mix-blend-mode:screen;opacity:.95;
+  -webkit-mask-image:radial-gradient(closest-side,#000 42%,transparent 100%);mask-image:radial-gradient(closest-side,#000 42%,transparent 100%)}
+.hero-in{position:relative;z-index:1;display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
+.hl{display:flex;flex-direction:column;gap:10px}
+.hr{display:flex;flex-direction:column;align-items:flex-end;gap:8px}
+h1{margin:0;font-size:22px;font-weight:700;color:#fff;display:flex;align-items:center;gap:8px;text-shadow:0 0 14px rgba(0,229,255,.65)}
+h1 svg{width:20px;height:20px;fill:#7fe9ff}
 #ttl{cursor:pointer}
 #ttl:hover{text-decoration:underline dotted}
 .btn{border:0;border-radius:4px;color:#fff;cursor:pointer;width:38px;height:32px;display:inline-flex;align-items:center;justify-content:center;vertical-align:top}
 .btn svg{width:15px;height:15px;fill:none;stroke:#fff;stroke-width:2}
-.b-g{background:#2ecc71}
+.b-g{background:#2ecc71;box-shadow:0 0 10px rgba(46,204,113,.5)}
 .spin svg{animation:sp .8s linear}
 @keyframes sp{to{transform:rotate(360deg)}}
 .dd{position:relative;display:flex;align-items:center;gap:8px}
-.ddbtn{background:#1d3a78;color:#fff;border:0;border-radius:3px;padding:8px 14px;font-weight:600;cursor:pointer;font-size:13px;font-family:inherit}
+.ddbtn{background:#1d3a78;color:#fff;border:1px solid rgba(0,229,255,.5);border-radius:3px;padding:8px 14px;font-weight:600;cursor:pointer;font-size:13px;font-family:inherit;box-shadow:0 0 10px rgba(0,229,255,.28)}
 .ddbtn:after{content:"";display:inline-block;margin-left:8px;border:4px solid transparent;border-top-color:#fff;vertical-align:-2px}
-.ddm{display:none;position:absolute;top:36px;left:0;background:#fff;border-radius:3px;box-shadow:0 3px 12px rgba(0,0,0,.25);z-index:9;min-width:150px}
+.ddm{display:none;position:absolute;top:38px;left:0;background:#fff;border-radius:3px;box-shadow:0 3px 12px rgba(0,0,0,.35);z-index:9;min-width:160px}
 .ddm.open{display:block}
 .ddm a{display:block;padding:8px 14px;color:#222;cursor:pointer}
 .ddm a:hover{background:#eef2fb}
@@ -609,8 +683,10 @@ h1 svg{width:20px;height:20px;fill:#444}
 .cur button:first-child{border-left:0}
 .cur button.on{background:#3f7cf0;color:#fff}
 .cur svg{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2}
-.rate{color:#7b8797;font-size:10.5px;margin-top:3px;min-height:14px}
+.rate{color:#a8c4ea;font-size:10.5px;margin-top:3px;min-height:14px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,440px),1fr));gap:30px;margin:16px 0 0;align-items:stretch}
+.grid.sg{grid-template-columns:repeat(auto-fill,minmax(min(100%,320px),1fr));gap:14px}
+.grid.sgrid{grid-template-columns:minmax(0,620px)}
 .card{background:#fff;border-radius:3px;box-shadow:0 1px 4px rgba(40,60,90,.25);padding:14px 16px 8px;position:relative;display:flex;flex-direction:column}
 .name{font-weight:700;font-size:13px;color:#222}
 .ed{cursor:pointer}
@@ -645,6 +721,28 @@ h1 svg{width:20px;height:20px;fill:#444}
 .t.r .l{color:#fff;background:rgba(0,0,0,.14);border-top-color:rgba(255,255,255,.3)}
 .foot{display:flex;justify-content:space-between;margin-top:auto;padding-top:10px;font-size:9.5px}
 .foot .br{color:#999}.foot .ag{color:#5fd39a}.foot .ag.stale{color:var(--red)}
+.sc{padding:12px 14px 8px}
+.srow{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:8px}
+.sl{display:flex;gap:20px}
+.sl .lb{display:block;color:#999;font-size:11px}
+.sv{font-size:21px;font-weight:700;line-height:1.15}
+.sr{text-align:right}
+.sbig{font-size:30px;font-weight:700;line-height:1.05;color:#222;white-space:nowrap}
+.sbig.pos{color:var(--green)}.sbig.neg{color:var(--red)}
+.ssub{font-size:12px;color:#777}
+.sumcard{padding:0;overflow:hidden}
+.sh{padding:16px 18px 10px}
+.sh .row{font-size:12px;font-weight:700;color:#444;text-transform:uppercase;margin:3px 0}
+.sh .row b{font-size:18px;margin-left:6px;font-weight:700}
+.sh .row i{font-style:normal;color:#888;font-weight:600}
+.sh .c1{color:var(--blue)}.sh .c2{color:#1aa7ff}
+.sh .cnt{text-align:right;color:#888;font-size:12px;text-transform:uppercase;margin:6px 0 4px}
+.sh .cnt b{color:#444}
+table.st{width:100%;border-collapse:collapse}
+.st th{background:#1f2328;color:#fff;font-weight:700;text-align:right;padding:9px 10px;font-size:12.5px}
+.st th:first-child{text-align:left;padding-left:18px}
+.st td{padding:9px 10px;text-align:right;border-top:1px solid #eef0f3;font-weight:600;white-space:nowrap}
+.st td:first-child{text-align:left;padding-left:18px}
 .tot{background:linear-gradient(180deg,#adc3f3 0%,#dde8f8 45%,#d9f6e8 100%);padding-bottom:12px}
 .tot .ttl{display:flex;justify-content:space-between;align-items:center;margin:6px 0 10px}
 .tot .ttl b{font-size:14px;text-transform:uppercase}
@@ -675,15 +773,24 @@ table.pt{width:100%;border-collapse:collapse;margin-top:10px}
 .mbtn button{flex:1;padding:9px;border:0;border-radius:3px;cursor:pointer;font-weight:600;font-family:inherit}
 #m_save{background:#1d3a78;color:#fff}#m_cancel{background:#e6ebf3}
 .mhint{color:#999;font-size:11px;margin-top:8px}
+@media(max-width:560px){
+  .logo{right:26%;width:160px;height:160px;opacity:.6}
+  h1{font-size:20px}
+}
 </style></head><body><div class="wrap">
-<div class="top">
-  <h1><svg viewBox="0 0 24 24"><path d="M12 12a5 5 0 1 0 0-10 5 5 0 0 0 0 10zm0 2c-4 0-8 2-8 5v3h16v-3c0-3-4-5-8-5z"/></svg><span id="ttl" title="Нажмите, чтобы переименовать">__TITLE__</span></h1>
-  <div><button class="btn b-g" id="rf" title="Обновить"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7M21 3v6h-6"/></svg></button></div>
-</div>
-<div class="top2">
-  <div class="dd"><button class="ddbtn" id="ddb">Расширенный</button>
-    <div class="ddm" id="ddm"><a data-v="pro">Расширенный</a><a data-v="income">Доходы</a></div></div>
-  <div class="curbox"><div class="cur" id="cur"></div><div class="rate" id="rate"></div></div>
+<div class="hero">
+  <div class="hero-bg"><img class="logo" src="/logo" alt="" onerror="this.style.display='none'"></div>
+  <div class="hero-in">
+    <div class="hl">
+      <h1><svg viewBox="0 0 24 24"><path d="M12 12a5 5 0 1 0 0-10 5 5 0 0 0 0 10zm0 2c-4 0-8 2-8 5v3h16v-3c0-3-4-5-8-5z"/></svg><span id="ttl" title="Нажмите, чтобы переименовать">__TITLE__</span></h1>
+      <div class="dd"><button class="ddbtn" id="ddb">Расширенный</button>
+        <div class="ddm" id="ddm"><a data-v="pro">Расширенный</a><a data-v="income">Доходы</a><a data-v="simple">Простой</a><a data-v="summary">Сводка</a></div></div>
+    </div>
+    <div class="hr">
+      <button class="btn b-g" id="rf" title="Обновить"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7M21 3v6h-6"/></svg></button>
+      <div class="curbox"><div class="cur" id="cur"></div><div class="rate" id="rate"></div></div>
+    </div>
+  </div>
 </div>
 <div id="app">__BODY__</div>
 </div>
@@ -698,6 +805,7 @@ table.pt{width:100%;border-collapse:collapse;margin-top:10px}
 </div></div>
 <script>
 let VIEW="__VIEW__", CUR="__CUR__", EDIT=null, RATE=null;
+const NAMES={pro:'Расширенный',income:'Доходы',simple:'Простой',summary:'Сводка'};
 const q=new URLSearchParams(location.search);
 const OKC=['ORIG','USD','RUB'];
 if(!q.get('cur')){const s=localStorage.getItem('fxcur');if(OKC.includes(s))CUR=s;}
@@ -714,7 +822,7 @@ function showRate(){
 }
 async function loadRate(){try{RATE=await (await fetch('/api/rates',{cache:'no-store'})).json();showRate();}catch(e){}}
 function sync(){
-  $('ddb').textContent=VIEW==='pro'?'Расширенный':'Доходы';
+  $('ddb').textContent=NAMES[VIEW]||NAMES.pro;
   const u=new URL(location);u.searchParams.set('view',VIEW);u.searchParams.set('cur',CUR);history.replaceState(null,'',u);
 }
 function stamp(){document.querySelectorAll('.ag').forEach(e=>e.dataset.base=Date.now());tick();}
@@ -787,12 +895,11 @@ if(CUR!=='__CUR__')load();
 
 
 start_rate_thread()
-if tg is not None:
+if notify is not None:
     try:
-        tg.init(sys.modules[__name__], app)
-    except Exception as _e:
-        TG_ERR = str(_e)
-        tg = None
+        notify.init(sys.modules[__name__], app)
+    except Exception:
+        pass
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
