@@ -1,4 +1,4 @@
-"""GTrade monitor (Расширенный / Доходы / Простой / Сводка). Диагностика: /debug"""
+"""GTrade monitor (Расширенный / Доходы / Простой / Сводка + группы + ночная тема). Диагностика: /debug"""
 import os
 import sys
 import json
@@ -29,8 +29,8 @@ CENT = os.environ.get("FX_CENT", "1") == "1"
 TZ_HOURS = float(os.environ.get("FX_TZ", "3"))
 SETTINGS_FILE = Path(os.environ.get("FX_SETTINGS", "settings.json"))
 BASE_DIR = Path(__file__).resolve().parent
-LOGO_NAMES = (("logo.png", "image/png"), ("logo.jpg", "image/jpeg"),
-              ("logo.jpeg", "image/jpeg"), ("logo.webp", "image/webp"))
+EXT_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".jfif": "image/jpeg",
+            ".jpe": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif"}
 BRAND = "FX Monitor (10с)"
 RATES = {"USD": 1.0, "RUB": 90.0}
 RATE_INFO = {"ok": False, "time": "", "src": "запасной курс"}
@@ -70,6 +70,37 @@ def save_settings():
 
 def page_title():
     return str(SETTINGS.get("_page", {}).get("name") or PAGE_TITLE)
+
+
+# ---------------------------------------------------------------- группы счетов
+def new_gid(n=0):
+    return f"g{int(time.time() * 1000)}{n}"
+
+
+def clean_groups(raw):
+    out, used, ids = [], set(), set()
+    if not isinstance(raw, list):
+        return out
+    for it in raw:
+        if not isinstance(it, dict):
+            continue
+        lg = it.get("logins")
+        if not isinstance(lg, list) or len(lg) != 2:
+            continue
+        lg = [str(x).strip() for x in lg]
+        if not lg[0] or not lg[1] or lg[0] == lg[1] or lg[0] in used or lg[1] in used:
+            continue
+        gid = str(it.get("id") or "")[:30]
+        if not gid or gid in ids:
+            gid = new_gid(len(out))
+        ids.add(gid)
+        used.update(lg)
+        out.append({"id": gid, "logins": lg, "title": str(it.get("title") or "")[:40]})
+    return out
+
+
+def get_groups():
+    return clean_groups(SETTINGS.get("_groups"))
 
 
 def fetch_cbr_rate():
@@ -180,6 +211,8 @@ def calc(login, info, cur):
     r = RATES.get(cur, 1.0)
     kb = 0.01 if CENT else 1.0
     S = SETTINGS.get(str(login), {})
+    if not isinstance(S, dict):
+        S = {}
 
     def usd(names):
         v = first_num(info, names)
@@ -298,7 +331,9 @@ def attrs(c):
 BADGE_HINT = {"g": "Торговля идёт", "y": "Сушка", "r": "Алготрейдинг выключен"}
 
 
-def age_html(c):
+def age_html(c, short=False):
+    if short:
+        return f'<span class="ag" data-age="{c["age"]}"><span class="at"></span></span>'
     return (f'<span class="ag" data-age="{c["age"]}">{escape(BRAND)} | <span class="at"></span></span>')
 
 
@@ -327,10 +362,11 @@ def margin_view(c):
     return f"{c['lvl']:.0f}%", ("pos" if c["lvl"] >= 100 else "neg")
 
 
-def pro_card(c):
+def pro_card(c, drag=False):
     cur, per = c["cur"], c["per"]
     ddcls = {"g": "pos", "y": "yel", "r": "neg"}[dd_tone(c["ddp"])]
     lvl, lcls = margin_view(c)
+    dr = ' draggable="true"' if drag else ""
 
     def mini(label, v, p):
         return (f'<div class="mini"><i>{label}</i><span class="{cls(v)}">{fmt_money(v, cur)}</span>'
@@ -339,7 +375,7 @@ def pro_card(c):
     dv = per["day"]["c"]
     big = f'{fmt_money(dv, cur)}' + ('' if dv is None else f' <small>({fmt_pct(per["day"]["cp"])})</small>')
     ping = f" ({c['ping']}мс)" if c["ping"] else ""
-    return f'''<div class="card" {attrs(c)}>
+    return f'''<div class="card" {attrs(c)}{dr}>
   <div class="h"><div>{head_html(c)}<div class="since">{since_html(c)}</div></div>
     <div class="dt">{escape(c["time"])}<span class="mi ed" title="Настройки счёта">☰</span></div></div>
   <div class="mid">
@@ -358,6 +394,37 @@ def pro_card(c):
 </div>'''
 
 
+def pro_view(cs):
+    by = {str(c["login"]): c for c in cs}
+    groups = get_groups()
+    gmap = {}
+    for g in groups:
+        for l in g["logins"]:
+            if l in by:
+                gmap.setdefault(l, g)
+    parts, emitted = [], set()
+    for c in cs:
+        l = str(c["login"])
+        g = gmap.get(l)
+        if g is None:
+            parts.append(pro_card(c, True))
+            continue
+        if g["id"] in emitted:
+            continue
+        emitted.add(g["id"])
+        members = [by[x] for x in g["logins"] if x in by and gmap.get(x) is g]
+        title = g["title"]
+        gt_cls = "gt" if title else "gt empty"
+        gid = escape(g["id"])
+        parts.append(
+            f'<div class="gbox" data-gid="{gid}"><div class="gh">'
+            f'<span class="{gt_cls}" data-gid="{gid}" title="Нажмите, чтобы подписать группу">{escape(title) if title else "Группа"}</span>'
+            f'<span class="gb"><button class="gx gswap" data-gid="{gid}" title="Поменять местами">⇄</button>'
+            f'<button class="gx gdel" data-gid="{gid}" title="Разгруппировать">✕</button></span></div>'
+            f'<div class="gcards">{"".join(pro_card(m) for m in members)}</div></div>')
+    return f'<div class="grid">{"".join(parts)}</div>'
+
+
 def simple_card(c):
     cur, per = c["cur"], c["per"]
     ddcls = {"g": "pos", "y": "yel", "r": "neg"}[dd_tone(c["ddp"])]
@@ -366,16 +433,13 @@ def simple_card(c):
     big = fmt_pct(dp)
     sub = "" if dv is None else fmt_money(dv, cur)
     return f'''<div class="card sc" {attrs(c)}>
-  <div class="h"><div>{head_html(c)}</div>
-    <div class="dt">{escape(c["time"])}<span class="mi ed" title="Настройки счёта">☰</span></div></div>
-  <div class="srow">
-    <div class="sl">
-      <div><span class="lb">просадка</span><div class="sv {ddcls}">{c["ddp"]:.2f}%</div></div>
-      <div><span class="lb">маржа</span><div class="sv {lcls}">{lvl}</div></div>
-    </div>
-    <div class="sr"><div class="sbig {cls(dv)}">{big}</div><div class="ssub">{sub}</div></div>
+  <div class="c1"><div class="nm">{head_html(c)}</div>{age_html(c, True)}</div>
+  <div class="c2">
+    <div><span class="lb">просадка</span><b class="{ddcls}">{c["ddp"]:.2f}%</b></div>
+    <div><span class="lb">маржа</span><b class="{lcls}">{lvl}</b></div>
   </div>
-  <div class="foot"><span></span>{age_html(c)}</div>
+  <div class="c3"><div class="sbig {cls(dv)}">{big}</div><div class="ssub">{sub}</div></div>
+  <span class="mi ed" title="Настройки счёта">☰</span>
 </div>'''
 
 
@@ -397,9 +461,11 @@ def summary_html(cs, cur):
                  f'<td class="{cls(dv)}">{fmt_pct(dp)}</td></tr>')
     return f'''<div class="card sumcard">
   <div class="sh">
-    <div class="row">баланс <b class="c1">{fmt_money(bal, cur)}</b></div>
-    <div class="row">эквити <b class="c2">{fmt_money(eq, cur)}</b></div>
-    <div class="row">сегодня <i>({date})</i> <b class="{cls(today)}">{fmt_money(today, cur)}</b></div>
+    <div class="rows">
+      <div class="row">баланс <b class="c1">{fmt_money(bal, cur)}</b></div>
+      <div class="row">эквити <b class="c2">{fmt_money(eq, cur)}</b></div>
+      <div class="row">сегодня <i>({date})</i> <b class="{cls(today)}">{fmt_money(today, cur)}</b></div>
+    </div>
     <div class="cnt">кол-во счетов: <b>{len(cs)}</b></div>
   </div>
   <table class="st"><tr><th>счёт</th><th>просадка</th><th>маржа</th><th>доход</th></tr>{rows}</table>
@@ -485,7 +551,7 @@ def render_body(view, cur):
         return f'<div class="grid sg">{"".join(simple_card(c) for c in cs)}</div>'
     if view == "summary":
         return f'<div class="grid sgrid">{summary_html(cs, cur)}</div>'
-    return f'<div class="grid">{"".join(pro_card(c) for c in cs)}</div>'
+    return pro_view(cs)
 
 
 VIEWS = {"pro": "pro", "income": "income", "inc": "income", "доходы": "income",
@@ -506,17 +572,26 @@ def real_cur(mode):
     return "USD" if mode == "ORIG" else mode
 
 
+def find_logo():
+    """Ищет logo.* (png, jpg, jpeg, jfif, webp, gif) рядом с main.py, регистр не важен."""
+    try:
+        for p in sorted(BASE_DIR.iterdir()):
+            if p.is_file() and p.stem.lower() == "logo" and p.suffix.lower() in EXT_MIME:
+                return p, EXT_MIME[p.suffix.lower()]
+    except Exception:
+        pass
+    return None, ""
+
+
 @app.get("/logo")
 def logo():
-    for name, mime in LOGO_NAMES:
-        p = BASE_DIR / name
+    p, mime = find_logo()
+    if p is not None:
         try:
-            if p.is_file():
-                return Response(p.read_bytes(), media_type=mime,
-                                headers={"Cache-Control": "public, max-age=3600"})
+            return Response(p.read_bytes(), media_type=mime, headers={"Cache-Control": "public, max-age=3600"})
         except Exception:
             pass
-    return Response("logo not found (загрузите logo.png рядом с main.py)", status_code=404)
+    return Response("logo not found (загрузите logo.png / logo.jpg / logo.jfif рядом с main.py)", status_code=404)
 
 
 @app.post("/api/update")
@@ -559,7 +634,7 @@ async def set_settings(request: Request):
         if ADMIN_PASS and str(data.get("pass", "")) != ADMIN_PASS:
             return JSONResponse({"status": "error", "detail": "bad pass"}, status_code=403)
         login = str(data.get("login", "")).strip()
-        if not login:
+        if not login or (login.startswith("_") and login != "_page"):
             return {"status": "error"}
         s = {}
         for key in ("name", "since"):
@@ -584,6 +659,49 @@ async def set_settings(request: Request):
         return {"status": "error"}
 
 
+@app.get("/api/groups")
+def api_groups_get():
+    return {"groups": get_groups()}
+
+
+@app.post("/api/groups")
+async def api_groups_post(request: Request):
+    try:
+        data = json.loads((await request.body()).decode("utf-8-sig", "ignore"))
+        if ADMIN_PASS and str(data.get("pass", "")) != ADMIN_PASS:
+            return JSONResponse({"status": "error", "detail": "bad pass"}, status_code=403)
+        act = str(data.get("action", ""))
+        gid = str(data.get("id", ""))
+        groups = get_groups()
+        if act == "add":
+            lg = [str(x).strip() for x in (data.get("logins") or [])]
+            if len(lg) != 2 or not lg[0] or not lg[1] or lg[0] == lg[1]:
+                return {"status": "error", "detail": "Нужно выбрать два разных счёта"}
+            used = {x for g in groups for x in g["logins"]}
+            if lg[0] in used or lg[1] in used:
+                return {"status": "error", "detail": "Один из счетов уже в группе"}
+            groups.append({"id": new_gid(len(groups)), "logins": lg, "title": ""})
+        elif act == "del":
+            groups = [g for g in groups if g["id"] != gid]
+        elif act == "swap":
+            for g in groups:
+                if g["id"] == gid:
+                    g["logins"].reverse()
+        elif act == "title":
+            for g in groups:
+                if g["id"] == gid:
+                    g["title"] = str(data.get("title") or "").strip()[:40]
+        elif act == "set":
+            groups = clean_groups(data.get("groups"))
+        else:
+            return {"status": "error", "detail": "Неизвестное действие"}
+        SETTINGS["_groups"] = groups
+        save_settings()
+        return {"status": "success", "groups": groups}
+    except Exception:
+        return {"status": "error", "detail": "Ошибка сервера"}
+
+
 @app.get("/debug", response_class=HTMLResponse)
 def debug():
     checks = [("balance", ("balance",)), ("equity", ("equity",)), ("margin", ("margin",)),
@@ -595,8 +713,9 @@ def debug():
     out = ['<meta charset="utf-8"><body style="font:14px Arial;padding:16px;background:#f4f6fa"><h2>Диагностика: что прислал робот</h2>']
     rate_txt = f"1 $ = {RATES.get('RUB', 0):.2f} ₽ ({RATE_INFO['src']}" + (f", {RATE_INFO['time']}" if RATE_INFO["time"] else "") + ")"
     out.append(f"<p>Курс рубля: <b>{escape(rate_txt)}</b></p>")
-    has_logo = any((BASE_DIR / n).is_file() for n, _ in LOGO_NAMES)
-    out.append(f"<p>Логотип: <b>{'найден' if has_logo else 'НЕ найден (загрузите logo.png рядом с main.py)'}</b></p>")
+    lp, _ = find_logo()
+    out.append(f"<p>Логотип: <b>{'найден: ' + escape(lp.name) if lp else 'НЕ найден (загрузите logo.png / logo.jpg / logo.jfif рядом с main.py)'}</b></p>")
+    out.append(f"<p>Групп счетов: <b>{len(get_groups())}</b></p>")
     if not accounts_data:
         out.append("<p>Робот пока ничего не прислал.</p>")
     for login, info in accounts_data.items():
@@ -635,15 +754,24 @@ PAGE = r"""<!doctype html>
 <html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>__TITLE__</title>
+<script>try{if(localStorage.getItem('fxtheme')==='dark')document.documentElement.classList.add('dark')}catch(e){}</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600;700&display=swap" rel="stylesheet">
 <style>
-:root{--green:#28c76f;--red:#dc1e4b;--blue:#3d5fd6;--yellow:#e0a800}
+:root{--green:#28c76f;--red:#dc1e4b;--yellow:#e0a800;--blue:#3d5fd6;--blue2:#1aa7ff;
+  --bg1:#e2eaf2;--bg2:#d5dfea;--card:#fff;--cardbd:transparent;--tx:#2b2f36;--st:#222;--mu:#888;--mu2:#999;
+  --ln:#eef0f3;--ln2:#d5dbe4;--inp:#fff;--inpbd:#c5cedd;--ddbg:#fff;--hov:#eef2fb;--sh:rgba(40,60,90,.25);
+  --th:#1f2328;--ago:#5fd39a;--totbg:linear-gradient(180deg,#adc3f3 0%,#dde8f8 45%,#d9f6e8 100%)}
+html.dark{--green:#34d986;--red:#ff4d70;--yellow:#f5b800;--blue:#7b95ff;--blue2:#3db8ff;
+  --bg1:#070d1a;--bg2:#0f1a30;--card:#141d2f;--cardbd:#23324d;--tx:#d6deec;--st:#f0f4fb;--mu:#8793a8;--mu2:#7c889d;
+  --ln:#1f2b42;--ln2:#26344d;--inp:#0e1626;--inpbd:#2c3c5a;--ddbg:#16213a;--hov:#1d2b49;--sh:rgba(0,0,0,.5);
+  --th:#0a111f;--ago:#4fd69a;--totbg:linear-gradient(180deg,#25365f 0%,#18233c 55%,#143229 100%)}
 *{box-sizing:border-box}
-body{margin:0;font:13px/1.35 "Open Sans","Segoe UI",Roboto,Arial,sans-serif;color:#2b2f36;
-  background:linear-gradient(135deg,#e2eaf2,#d5dfea);min-height:100vh}
-.wrap{padding:8px 8px 30px}
-.hero{position:relative;border-radius:10px;padding:12px 16px 14px;box-shadow:0 4px 18px rgba(8,20,60,.35)}
+html{background:var(--bg2)}
+body{margin:0;font:13px/1.35 "Open Sans","Segoe UI",Roboto,Arial,sans-serif;color:var(--tx);
+  background:linear-gradient(135deg,var(--bg1),var(--bg2));min-height:100vh}
+.wrap{padding:8px 8px 70px}
+.hero{position:relative;border-radius:10px;padding:12px 16px 14px;min-height:124px;box-shadow:0 4px 18px rgba(8,20,60,.35)}
 .hero-bg{position:absolute;inset:0;border-radius:10px;overflow:hidden;
   background:
     radial-gradient(520px 200px at 82% 50%,rgba(0,229,255,.30),transparent 62%),
@@ -655,9 +783,9 @@ body{margin:0;font:13px/1.35 "Open Sans","Segoe UI",Roboto,Arial,sans-serif;colo
   -webkit-mask-image:linear-gradient(90deg,transparent 0%,#000 45%,#000 100%);mask-image:linear-gradient(90deg,transparent 0%,#000 45%,#000 100%)}
 .hero-bg:after{content:"";position:absolute;left:0;right:0;bottom:0;height:2px;
   background:linear-gradient(90deg,transparent,#00e5ff 25%,#28c76f 50%,#ff2d55 75%,transparent)}
-.logo{position:absolute;right:14%;top:50%;transform:translateY(-50%);width:200px;height:200px;object-fit:cover;
+.logo{position:absolute;right:14%;top:50%;transform:translateY(-50%);height:150%;width:auto;
   mix-blend-mode:screen;opacity:.95;
-  -webkit-mask-image:radial-gradient(closest-side,#000 42%,transparent 100%);mask-image:radial-gradient(closest-side,#000 42%,transparent 100%)}
+  -webkit-mask-image:radial-gradient(closest-side,#000 45%,transparent 100%);mask-image:radial-gradient(closest-side,#000 45%,transparent 100%)}
 .hero-in{position:relative;z-index:1;display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
 .hl{display:flex;flex-direction:column;gap:10px}
 .hr{display:flex;flex-direction:column;align-items:flex-end;gap:8px}
@@ -666,115 +794,177 @@ h1 svg{width:20px;height:20px;fill:#7fe9ff}
 #ttl{cursor:pointer}
 #ttl:hover{text-decoration:underline dotted}
 .btn{border:0;border-radius:4px;color:#fff;cursor:pointer;width:38px;height:32px;display:inline-flex;align-items:center;justify-content:center;vertical-align:top}
-.btn svg{width:15px;height:15px;fill:none;stroke:#fff;stroke-width:2}
+.btn svg{width:15px;height:15px;fill:none;stroke:#fff;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 .b-g{background:#2ecc71;box-shadow:0 0 10px rgba(46,204,113,.5)}
+.b-th{background:#1d3a78;border:1px solid rgba(0,229,255,.5);width:34px}
+.i-sun{display:none}
+html.dark .i-sun{display:block}
+html.dark .i-moon{display:none}
 .spin svg{animation:sp .8s linear}
 @keyframes sp{to{transform:rotate(360deg)}}
-.dd{position:relative;display:flex;align-items:center;gap:8px}
+.dd{position:relative;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .ddbtn{background:#1d3a78;color:#fff;border:1px solid rgba(0,229,255,.5);border-radius:3px;padding:8px 14px;font-weight:600;cursor:pointer;font-size:13px;font-family:inherit;box-shadow:0 0 10px rgba(0,229,255,.28)}
 .ddbtn:after{content:"";display:inline-block;margin-left:8px;border:4px solid transparent;border-top-color:#fff;vertical-align:-2px}
-.ddm{display:none;position:absolute;top:38px;left:0;background:#fff;border-radius:3px;box-shadow:0 3px 12px rgba(0,0,0,.35);z-index:9;min-width:160px}
+.ddbtn.plain:after{display:none}
+body.gm #gm{background:#2ecc71;color:#06260f;border-color:#2ecc71}
+.ddm{display:none;position:absolute;top:38px;left:0;background:var(--ddbg);border-radius:3px;box-shadow:0 3px 12px rgba(0,0,0,.35);z-index:9;min-width:160px}
 .ddm.open{display:block}
-.ddm a{display:block;padding:8px 14px;color:#222;cursor:pointer}
-.ddm a:hover{background:#eef2fb}
+.ddm a{display:block;padding:8px 14px;color:var(--tx);cursor:pointer}
+.ddm a:hover{background:var(--hov)}
 .curbox{text-align:right}
-.cur{display:inline-flex;border:1px solid #3f7cf0;border-radius:3px;overflow:hidden;background:#fff;height:32px}
-.cur button{border:0;border-left:1px solid #3f7cf0;background:#fff;color:#3f7cf0;width:34px;cursor:pointer;font-size:13px;font-weight:700;font-family:inherit}
+.crow{display:inline-flex;gap:6px;align-items:center}
+.cur{display:inline-flex;border:1px solid #3f7cf0;border-radius:3px;overflow:hidden;background:var(--card);height:32px}
+.cur button{border:0;border-left:1px solid #3f7cf0;background:var(--card);color:#3f7cf0;width:34px;cursor:pointer;font-size:13px;font-weight:700;font-family:inherit}
 .cur button:first-child{border-left:0}
 .cur button.on{background:#3f7cf0;color:#fff}
 .cur svg{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2}
 .rate{color:#a8c4ea;font-size:10.5px;margin-top:3px;min-height:14px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,440px),1fr));gap:30px;margin:16px 0 0;align-items:stretch}
-.grid.sg{grid-template-columns:repeat(auto-fill,minmax(min(100%,320px),1fr));gap:14px}
+.grid.sg{grid-template-columns:repeat(auto-fill,minmax(min(100%,300px),1fr));gap:8px}
 .grid.sgrid{grid-template-columns:minmax(0,620px)}
-.card{background:#fff;border-radius:3px;box-shadow:0 1px 4px rgba(40,60,90,.25);padding:14px 16px 8px;position:relative;display:flex;flex-direction:column}
-.name{font-weight:700;font-size:13px;color:#222}
+.card{background:var(--card);border:1px solid var(--cardbd);border-radius:3px;box-shadow:0 1px 4px var(--sh);padding:14px 16px 8px;position:relative;display:flex;flex-direction:column}
+.name{font-weight:700;font-size:13px;color:var(--st)}
 .ed{cursor:pointer}
 .name.ed:hover{text-decoration:underline dotted}
 .badge{display:inline-block;min-width:22px;padding:0 6px;margin-left:4px;border-radius:12px;color:#fff;font-weight:600;font-size:12px;text-align:center}
 .g{background:var(--green)}.r{background:var(--red)}.y{background:#f6b90f}
-.since{color:#aaa;font-size:11px}
-.dt{color:#888;font-size:10.5px;text-align:right}
-.mi{color:#888;font-size:13px;display:block;text-align:right;line-height:1}
+.since{color:var(--mu2);font-size:11px}
+.dt{color:var(--mu);font-size:10.5px;text-align:right}
+.mi{color:var(--mu);font-size:13px;display:block;text-align:right;line-height:1}
 .pos{color:var(--green)}.neg{color:var(--red)}.yel{color:var(--yellow)}
 .h{display:flex;justify-content:space-between}
 .mid{display:flex;justify-content:space-between;margin-top:2px;gap:8px}
-.lm{display:flex;gap:16px}.lm .lb{color:#999;font-size:13px}
+.lm{display:flex;gap:16px;flex-wrap:wrap}.lm .lb{color:var(--mu2);font-size:13px}
 .bigp{font-size:25px;font-weight:700;line-height:1.15}
 .sub{font-size:12px}
 .day{text-align:right}
-.day .big{font-size:24px;font-weight:700;color:#222;line-height:1.1;white-space:nowrap}
-.day .big small{font-size:18px;font-weight:600;color:#666}
+.day .big{font-size:24px;font-weight:700;color:var(--st);line-height:1.1;white-space:nowrap}
+.day .big small{font-size:18px;font-weight:600;color:var(--mu)}
 .day .big.pos{color:var(--green)}.day .big.neg{color:var(--red)}
-.mini{font-size:11.5px;color:#444;white-space:nowrap}.mini i{font-style:normal;color:#999;font-size:10px;margin-right:3px}
+.mini{font-size:11.5px;color:var(--tx);white-space:nowrap}.mini i{font-style:normal;color:var(--mu2);font-size:10px;margin-right:3px}
 .bar{display:flex;height:31px;margin-top:6px;color:#fff;font-weight:700;font-size:16px}
 .bar div{flex:1;display:flex;align-items:center;justify-content:center;white-space:nowrap;overflow:hidden}
 .bar div:first-child{background:#4169e1}.bar div:last-child{background:#1aa7ff}
 .tiles{display:flex;flex-wrap:wrap;gap:4px;margin-top:10px;min-height:20px}
 .t{width:66px;text-align:center;color:#fff;background:#3dc47e;border-radius:6px;overflow:hidden;padding-top:1px}
-.t.y{background:#f4b32a}.t.r{background:var(--red)}
+.t.y{background:#f4b32a}.t.r{background:#dc1e4b}
 .t .s{color:#1e2226;font-weight:700;font-size:11px;line-height:1.2;padding:4px 0 3px}
 .t .p{background:#33383e;color:#fff;font-size:11px;font-weight:600;line-height:1.3;padding:1px 0;margin:0 3px;border-radius:3px}
 .t .v{color:#111;font-size:15px;font-weight:700;line-height:1.2;padding:5px 0 3px;white-space:nowrap;letter-spacing:-.2px}
 .t .l{color:#1e2226;font-size:10.5px;font-weight:600;line-height:1.35;padding:3px 0 4px;background:rgba(0,0,0,.09);border-top:1px solid rgba(0,0,0,.12);white-space:nowrap}
+.t.r .s{color:#1e2226}
 .t.r .v{color:#fff}
 .t.r .l{color:#fff;background:rgba(0,0,0,.14);border-top-color:rgba(255,255,255,.3)}
 .foot{display:flex;justify-content:space-between;margin-top:auto;padding-top:10px;font-size:9.5px}
-.foot .br{color:#999}.foot .ag{color:#5fd39a}.foot .ag.stale{color:var(--red)}
-.sc{padding:12px 14px 8px}
-.srow{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:8px}
-.sl{display:flex;gap:20px}
-.sl .lb{display:block;color:#999;font-size:11px}
-.sv{font-size:21px;font-weight:700;line-height:1.15}
-.sr{text-align:right}
-.sbig{font-size:30px;font-weight:700;line-height:1.05;color:#222;white-space:nowrap}
+.foot .br{color:var(--mu2)}
+.ag{color:var(--ago)}.ag.stale{color:var(--red)}
+/* простой: компактная строка */
+.sc{flex-direction:row;align-items:center;gap:10px;padding:6px 22px 6px 12px;min-height:48px}
+.sc .c1{flex:1;min-width:0}
+.sc .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sc .ag{display:block;font-size:9px;line-height:1.2}
+.sc .c2{display:flex;flex-direction:column;font-size:13px;line-height:1.25;white-space:nowrap}
+.sc .c2 .lb{color:var(--mu2);font-size:10.5px;margin-right:4px}
+.sc .c2 b{font-weight:700}
+.sc .c3{text-align:right;min-width:78px}
+.sbig{font-size:21px;font-weight:700;line-height:1.05;color:var(--st);white-space:nowrap}
 .sbig.pos{color:var(--green)}.sbig.neg{color:var(--red)}
-.ssub{font-size:12px;color:#777}
+.ssub{font-size:11px;color:var(--mu);line-height:1.2;min-height:13px}
+.sc .mi{position:absolute;top:3px;right:6px;font-size:12px}
+/* сводка */
 .sumcard{padding:0;overflow:hidden}
-.sh{padding:16px 18px 10px}
-.sh .row{font-size:12px;font-weight:700;color:#444;text-transform:uppercase;margin:3px 0}
-.sh .row b{font-size:18px;margin-left:6px;font-weight:700}
-.sh .row i{font-style:normal;color:#888;font-weight:600}
-.sh .c1{color:var(--blue)}.sh .c2{color:#1aa7ff}
-.sh .cnt{text-align:right;color:#888;font-size:12px;text-transform:uppercase;margin:6px 0 4px}
-.sh .cnt b{color:#444}
+.sh{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;padding:10px 16px 8px}
+.sh .row{font-size:12px;font-weight:700;color:var(--tx);text-transform:uppercase;margin:0;line-height:1.55}
+.sh .row b{font-size:17px;margin-left:6px;font-weight:700}
+.sh .row i{font-style:normal;color:var(--mu);font-weight:600}
+.sh .c1{color:var(--blue)}.sh .c2{color:var(--blue2)}
+.sh .cnt{text-align:right;color:var(--mu);font-size:11.5px;text-transform:uppercase;white-space:nowrap;margin-top:3px}
+.sh .cnt b{color:var(--tx)}
 table.st{width:100%;border-collapse:collapse}
-.st th{background:#1f2328;color:#fff;font-weight:700;text-align:right;padding:9px 10px;font-size:12.5px}
+.st th{background:var(--th);color:#fff;font-weight:700;text-align:right;padding:9px 10px;font-size:12.5px}
 .st th:first-child{text-align:left;padding-left:18px}
-.st td{padding:9px 10px;text-align:right;border-top:1px solid #eef0f3;font-weight:600;white-space:nowrap}
+.st td{padding:9px 10px;text-align:right;border-top:1px solid var(--ln);font-weight:600;white-space:nowrap}
 .st td:first-child{text-align:left;padding-left:18px}
-.tot{background:linear-gradient(180deg,#adc3f3 0%,#dde8f8 45%,#d9f6e8 100%);padding-bottom:12px}
+/* доходы */
+.tot{background:var(--totbg);padding-bottom:12px}
 .tot .ttl{display:flex;justify-content:space-between;align-items:center;margin:6px 0 10px}
-.tot .ttl b{font-size:14px;text-transform:uppercase}
+.tot .ttl b{font-size:14px;text-transform:uppercase;color:var(--st)}
 .bal{font-size:18px;font-weight:600;color:var(--blue)}
 .ig{display:grid;grid-template-columns:1fr auto;column-gap:10px;row-gap:1px;align-items:center}
 .ig .r2{text-align:right}
 .lnk{color:var(--blue)}
-.lb2{color:#888;font-size:13px}
+.lb2{color:var(--mu);font-size:13px}
 .roi,.rom{display:inline-block;padding:0 6px;margin-top:1px;font-size:13px;color:#222;border-radius:2px}
 .roi{background:linear-gradient(90deg,#8bf0b5,#3fd48a)}
 .rom{background:linear-gradient(90deg,#73e6f6,#4a9df8)}
 .roi b,.rom b{font-weight:700}
 table.pt{width:100%;border-collapse:collapse;margin-top:10px}
-.pt th{font-weight:400;color:#888;text-align:right;padding:1px 0}
-.pt td{text-align:right;padding:2px 0;border-top:1px solid #d5dbe4;white-space:nowrap}
-.pt td:first-child,.pt th:first-child{text-align:left;color:#888;width:20%}
-.pt td b{font-weight:700;color:#222}
+.pt th{font-weight:400;color:var(--mu);text-align:right;padding:1px 0}
+.pt td{text-align:right;padding:2px 0;border-top:1px solid var(--ln2);white-space:nowrap}
+.pt td:first-child,.pt th:first-child{text-align:left;color:var(--mu);width:20%}
+.pt td b{font-weight:700;color:var(--st)}
 .pt td b.pos{color:var(--green)}.pt td b.neg{color:var(--red)}
-.pt td em{font-style:normal;color:#444}
-.empty{margin:40px 8px;color:#777}
-.mdl{display:none;position:fixed;inset:0;background:rgba(20,30,50,.45);z-index:50;align-items:center;justify-content:center}
+.pt td em{font-style:normal;color:var(--tx)}
+.empty{margin:40px 8px;color:var(--mu)}
+/* группы */
+.gbox{background:rgba(63,124,240,.09);border:1px solid rgba(63,124,240,.4);border-radius:8px;padding:6px 8px 8px;display:flex;flex-direction:column}
+.gh{display:flex;justify-content:space-between;align-items:center;min-height:24px;margin-bottom:4px}
+.gt{font-weight:700;font-size:12px;color:var(--st);cursor:pointer;letter-spacing:.4px}
+.gt.empty{color:var(--mu);font-weight:600}
+.gx{border:0;background:transparent;color:var(--mu);font-size:15px;cursor:pointer;padding:2px 7px;border-radius:3px;font-family:inherit}
+.gx:hover{background:rgba(63,124,240,.25);color:var(--st)}
+.gcards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;flex:1}
+.card.sel{outline:3px solid #3f7cf0;outline-offset:-1px}
+.card.dov{outline:3px dashed #2ecc71;outline-offset:-1px}
+.card.dragging{opacity:.5}
+body.gm .card[data-login]{cursor:pointer}
+body.gm .gbox .card{opacity:.55}
+#gbar{display:none;position:fixed;left:50%;transform:translateX(-50%);bottom:14px;z-index:40;background:#1d3a78;color:#fff;border-radius:8px;padding:8px 12px;gap:10px;align-items:center;box-shadow:0 4px 18px rgba(0,0,0,.45);font-size:13px;max-width:96vw}
+#gbar button{border:0;border-radius:4px;padding:7px 12px;font-weight:600;cursor:pointer;font-family:inherit}
+#gok{background:#2ecc71;color:#06260f}
+#gok:disabled{opacity:.45;cursor:default}
+#gend{background:#e6ebf3;color:#223}
+/* модальное окно */
+.mdl{display:none;position:fixed;inset:0;background:rgba(10,16,30,.55);z-index:50;align-items:center;justify-content:center}
 .mdl.open{display:flex}
-.mbox{background:#fff;border-radius:4px;padding:18px 20px;width:min(92vw,360px);box-shadow:0 8px 30px rgba(0,0,0,.35)}
-.mbox h3{margin:0 0 6px;font-size:15px}
-.mbox label{display:block;color:#666;font-size:12px;margin-top:9px}
-.mbox input{width:100%;padding:7px 9px;border:1px solid #c5cedd;border-radius:3px;font-size:14px;margin-top:3px;font-family:inherit}
+.mbox{background:var(--card);color:var(--tx);border:1px solid var(--cardbd);border-radius:4px;padding:18px 20px;width:min(92vw,360px);box-shadow:0 8px 30px rgba(0,0,0,.35)}
+.mbox h3{margin:0 0 6px;font-size:15px;color:var(--st)}
+.mbox label{display:block;color:var(--mu);font-size:12px;margin-top:9px}
+.mbox input{width:100%;padding:7px 9px;border:1px solid var(--inpbd);background:var(--inp);color:var(--st);border-radius:3px;font-size:14px;margin-top:3px;font-family:inherit}
 .mbtn{display:flex;gap:8px;margin-top:14px}
 .mbtn button{flex:1;padding:9px;border:0;border-radius:3px;cursor:pointer;font-weight:600;font-family:inherit}
-#m_save{background:#1d3a78;color:#fff}#m_cancel{background:#e6ebf3}
-.mhint{color:#999;font-size:11px;margin-top:8px}
+#m_save{background:#1d3a78;color:#fff}#m_cancel{background:var(--hov);color:var(--tx)}
+.mhint{color:var(--mu2);font-size:11px;margin-top:8px}
+@media(min-width:930px){.gbox{grid-column:span 2}}
+@media(max-width:880px){
+  .gbox{padding:5px 5px 6px}
+  .gbox .card{padding:8px 8px 6px}
+  .gbox .name{font-size:12px}
+  .gbox .badge{min-width:18px;padding:0 4px;font-size:11px}
+  .gbox .dt{font-size:0;line-height:0}
+  .gbox .mi{font-size:14px;line-height:1}
+  .gbox .since{font-size:9.5px}
+  .gbox .mid{flex-direction:column;gap:2px}
+  .gbox .lm{gap:10px}
+  .gbox .lm .lb{font-size:11px}
+  .gbox .bigp{font-size:19px}
+  .gbox .sub{font-size:10.5px}
+  .gbox .day{text-align:left}
+  .gbox .day .big{font-size:18px}
+  .gbox .day .big small{font-size:13px}
+  .gbox .mini{font-size:10px}
+  .gbox .bar{height:25px;font-size:12px}
+  .gbox .tiles{gap:3px}
+  .gbox .t{width:50px}
+  .gbox .t .s{font-size:10px}.gbox .t .p{font-size:9.5px}.gbox .t .v{font-size:12px}.gbox .t .l{font-size:9px}
+  .gbox .foot{justify-content:flex-end}
+  .gbox .foot .br{display:none}
+  .gbox .ag{font-size:8.5px}
+}
+@media(max-width:700px){
+  .logo{right:auto;left:50%;transform:translate(-50%,-50%);height:135%;opacity:.7}
+}
 @media(max-width:560px){
-  .logo{right:26%;width:160px;height:160px;opacity:.6}
   h1{font-size:20px}
 }
 </style></head><body><div class="wrap">
@@ -784,16 +974,27 @@ table.pt{width:100%;border-collapse:collapse;margin-top:10px}
     <div class="hl">
       <h1><svg viewBox="0 0 24 24"><path d="M12 12a5 5 0 1 0 0-10 5 5 0 0 0 0 10zm0 2c-4 0-8 2-8 5v3h16v-3c0-3-4-5-8-5z"/></svg><span id="ttl" title="Нажмите, чтобы переименовать">__TITLE__</span></h1>
       <div class="dd"><button class="ddbtn" id="ddb">Расширенный</button>
+        <button class="ddbtn plain" id="gm" title="Объединить два счёта рядом">Группы</button>
         <div class="ddm" id="ddm"><a data-v="pro">Расширенный</a><a data-v="income">Доходы</a><a data-v="simple">Простой</a><a data-v="summary">Сводка</a></div></div>
     </div>
     <div class="hr">
       <button class="btn b-g" id="rf" title="Обновить"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7M21 3v6h-6"/></svg></button>
-      <div class="curbox"><div class="cur" id="cur"></div><div class="rate" id="rate"></div></div>
+      <div class="curbox">
+        <div class="crow">
+          <button class="btn b-th" id="th" title="Тема: день / ночь">
+            <svg class="i-moon" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+            <svg class="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+          </button>
+          <div class="cur" id="cur"></div>
+        </div>
+        <div class="rate" id="rate"></div>
+      </div>
     </div>
   </div>
 </div>
 <div id="app">__BODY__</div>
 </div>
+<div id="gbar"><span id="gtx">Выберите 2 счёта (0/2)</span><button id="gok" disabled>Объединить</button><button id="gend">Готово</button></div>
 <div class="mdl" id="mdl"><div class="mbox">
   <h3>Настройки счёта <span id="mlog"></span></h3>
   <label>Название<input id="f_name"></label>
@@ -804,13 +1005,22 @@ table.pt{width:100%;border-collapse:collapse;margin-top:10px}
   <div class="mhint">Пустое поле = брать данные от робота автоматически</div>
 </div></div>
 <script>
-let VIEW="__VIEW__", CUR="__CUR__", EDIT=null, RATE=null;
+let VIEW="__VIEW__", CUR="__CUR__", EDIT=null, RATE=null, GM=false, SEL=[], DRAG=null;
 const NAMES={pro:'Расширенный',income:'Доходы',simple:'Простой',summary:'Сводка'};
 const q=new URLSearchParams(location.search);
 const OKC=['ORIG','USD','RUB'];
 if(!q.get('cur')){const s=localStorage.getItem('fxcur');if(OKC.includes(s))CUR=s;}
 const CURS=[['ORIG','<svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18"/></svg>'],['USD','$'],['RUB','₽']];
 const $=id=>document.getElementById(id);
+
+/* ---- тема ---- */
+$('th').onclick=()=>{
+  const d=!document.documentElement.classList.contains('dark');
+  document.documentElement.classList.toggle('dark',d);
+  try{localStorage.setItem('fxtheme',d?'dark':'light');}catch(e){}
+};
+
+/* ---- валюта ---- */
 function drawCur(){
   $('cur').innerHTML=CURS.map(([k,l])=>`<button data-c="${k}" class="${CUR===k?'on':''}">${l}</button>`).join('');
   $('cur').querySelectorAll('button').forEach(b=>b.onclick=()=>{CUR=b.dataset.c;localStorage.setItem('fxcur',CUR);sync();drawCur();showRate();load();});
@@ -823,26 +1033,38 @@ function showRate(){
 async function loadRate(){try{RATE=await (await fetch('/api/rates',{cache:'no-store'})).json();showRate();}catch(e){}}
 function sync(){
   $('ddb').textContent=NAMES[VIEW]||NAMES.pro;
+  $('gm').style.display=VIEW==='pro'?'':'none';
+  if(VIEW!=='pro'&&GM){GM=false;SEL=[];applySel();}
   const u=new URL(location);u.searchParams.set('view',VIEW);u.searchParams.set('cur',CUR);history.replaceState(null,'',u);
 }
+
+/* ---- время "сек. назад" ---- */
 function stamp(){document.querySelectorAll('.ag').forEach(e=>e.dataset.base=Date.now());tick();}
 function tick(){document.querySelectorAll('.ag').forEach(e=>{
   const s=Math.round(+e.dataset.age+(Date.now()-(+e.dataset.base||Date.now()))/1000);
   e.querySelector('.at').textContent=s<60?s+' сек. назад':s<3600?Math.floor(s/60)+' мин. назад':Math.floor(s/3600)+' ч. назад';
   e.classList.toggle('stale',s>60);});}
+
+/* ---- загрузка ---- */
 async function load(){
+  if(DRAG)return;
   $('rf').classList.add('spin');setTimeout(()=>$('rf').classList.remove('spin'),800);
   try{const r=await fetch('/fragment?view='+VIEW+'&cur='+CUR,{cache:'no-store'});
-    if(r.ok){$('app').innerHTML=await r.text();stamp();}}catch(e){}
+    if(r.ok){const t=await r.text();if(!DRAG){$('app').innerHTML=t;stamp();applySel();}}}catch(e){}
 }
-async function saveSettings(p){
+
+/* ---- запросы с паролем ---- */
+async function api(url,p){
   p.pass=sessionStorage.getItem('fxpass')||'';
   try{
-    const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});
-    if(r.status===403){const w=prompt('Пароль на изменение настроек:');if(w){sessionStorage.setItem('fxpass',w);return saveSettings(p);}return false;}
-    const j=await r.json();return j.status==='success';
-  }catch(e){return false;}
+    const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});
+    if(r.status===403){const w=prompt('Пароль на изменение настроек:');if(w){sessionStorage.setItem('fxpass',w);return api(url,p);}return null;}
+    return await r.json();
+  }catch(e){return null;}
 }
+async function saveSettings(p){const j=await api('/api/settings',p);return !!j&&j.status==='success';}
+
+/* ---- название страницы ---- */
 $('ttl').onclick=async()=>{
   const v=prompt('Название страницы (пусто = по умолчанию):',$('ttl').textContent);
   if(v===null)return;
@@ -852,6 +1074,8 @@ $('ttl').onclick=async()=>{
     location.reload();
   }else alert('Не удалось сохранить');
 };
+
+/* ---- настройки счёта ---- */
 document.addEventListener('click',e=>{
   const t=e.target.closest('.ed');if(!t)return;
   const c=t.closest('[data-login]');if(!c)return;
@@ -885,11 +1109,92 @@ async function restore(){
     if(ch&&!sessionStorage.getItem('fxrestored')){sessionStorage.setItem('fxrestored','1');location.reload();}
   }catch(e){}
 }
+
+/* ---- группы счетов ---- */
+function applySel(){
+  document.querySelectorAll('#app .card[data-login]').forEach(c=>c.classList.toggle('sel',SEL.includes(c.dataset.login)));
+  document.body.classList.toggle('gm',GM);
+  $('gbar').style.display=GM?'flex':'none';
+  $('gtx').textContent=SEL.length===2?'Выбрано 2 счёта':'Выберите 2 счёта ('+SEL.length+'/2)';
+  $('gok').disabled=SEL.length!==2;
+}
+async function gact(p){
+  const j=await api('/api/groups',p);
+  if(!j||j.status!=='success'){alert((j&&j.detail)||'Не удалось сохранить группу');return false;}
+  try{localStorage.setItem('fxgroups',JSON.stringify(j.groups||[]));}catch(e){}
+  await load();return true;
+}
+$('gm').onclick=()=>{GM=!GM;SEL=[];applySel();};
+$('gend').onclick=()=>{GM=false;SEL=[];applySel();};
+$('gok').onclick=async()=>{
+  if(SEL.length!==2)return;
+  if(await gact({action:'add',logins:SEL.slice()})){SEL=[];GM=false;applySel();}
+};
+document.addEventListener('click',e=>{
+  if(!GM)return;
+  const c=e.target.closest('#app .card[data-login]');
+  if(!c)return;
+  e.stopPropagation();e.preventDefault();
+  if(c.closest('.gbox'))return;
+  const l=c.dataset.login,i=SEL.indexOf(l);
+  if(i>=0)SEL.splice(i,1);else{SEL.push(l);if(SEL.length>2)SEL.shift();}
+  applySel();
+},true);
+$('app').addEventListener('click',e=>{
+  const b=e.target.closest('.gswap,.gdel,.gt');
+  if(!b)return;
+  const id=b.dataset.gid;
+  if(b.classList.contains('gdel')){if(confirm('Разгруппировать счета?'))gact({action:'del',id:id});}
+  else if(b.classList.contains('gswap'))gact({action:'swap',id:id});
+  else{
+    const v=prompt('Подпись группы (например EURUSD):',b.classList.contains('empty')?'':b.textContent);
+    if(v!==null)gact({action:'title',id:id,title:v});
+  }
+});
+function clearDrag(){document.querySelectorAll('.dov,.dragging').forEach(x=>x.classList.remove('dov','dragging'));}
+$('app').addEventListener('dragstart',e=>{
+  const c=e.target.closest&&e.target.closest('.card[draggable="true"]');
+  if(!c||GM)return;
+  DRAG=c.dataset.login;
+  e.dataTransfer.effectAllowed='move';
+  try{e.dataTransfer.setData('text/plain',DRAG);}catch(_){}
+  c.classList.add('dragging');
+});
+$('app').addEventListener('dragover',e=>{
+  if(!DRAG)return;
+  const c=e.target.closest&&e.target.closest('.card[draggable="true"]');
+  if(c&&c.dataset.login!==DRAG){
+    e.preventDefault();e.dataTransfer.dropEffect='move';
+    document.querySelectorAll('.dov').forEach(x=>{if(x!==c)x.classList.remove('dov');});
+    c.classList.add('dov');
+  }
+});
+$('app').addEventListener('drop',async e=>{
+  if(!DRAG)return;
+  const c=e.target.closest&&e.target.closest('.card[draggable="true"]');
+  if(!c||c.dataset.login===DRAG)return;
+  e.preventDefault();
+  const a=c.dataset.login,b=DRAG;DRAG=null;clearDrag();
+  await gact({action:'add',logins:[a,b]});
+});
+$('app').addEventListener('dragend',()=>{DRAG=null;clearDrag();});
+async function restoreGroups(){
+  try{
+    const g=await (await fetch('/api/groups',{cache:'no-store'})).json();
+    const srv=g.groups||[];
+    if(srv.length){localStorage.setItem('fxgroups',JSON.stringify(srv));return;}
+    const loc=JSON.parse(localStorage.getItem('fxgroups')||'[]');
+    if(loc.length){const j=await api('/api/groups',{action:'set',groups:loc});if(j&&j.status==='success')load();}
+  }catch(e){}
+}
+
+/* ---- меню ---- */
 $('ddb').onclick=e=>{e.stopPropagation();$('ddm').classList.toggle('open');};
 document.querySelectorAll('#ddm a').forEach(a=>a.onclick=()=>{VIEW=a.dataset.v;sync();load();});
 document.addEventListener('click',()=>$('ddm').classList.remove('open'));
 $('rf').onclick=load;
-drawCur();sync();stamp();loadRate();restore();setInterval(tick,1000);setInterval(load,3000);setInterval(loadRate,600000);
+drawCur();sync();applySel();stamp();loadRate();restore();restoreGroups();
+setInterval(tick,1000);setInterval(load,3000);setInterval(loadRate,600000);
 if(CUR!=='__CUR__')load();
 </script></body></html>"""
 
