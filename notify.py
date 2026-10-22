@@ -11,6 +11,7 @@ import threading
 import urllib.request
 import urllib.error
 from datetime import datetime, timedelta
+from html import escape
 from pathlib import Path
 
 from fastapi.responses import JSONResponse
@@ -20,11 +21,11 @@ TG_TOKEN = os.environ.get("TG_TOKEN", "").strip()
 TG_CHAT = os.environ.get("TG_CHAT", "").strip()
 DB_PATH = os.environ.get("NOTIFY_DB", str(Path(__file__).resolve().parent / "notify_state.db"))
 
-MIN_MOVE_USD = 1.0        # баланс: сообщение при изменении за один пакет >= $1
+MIN_MOVE_USD = 1.0        # баланс: сообщение, как только накопилось изменение >= $1
 DD_START = 40.0           # первое сообщение о просадке при >= 40%
 DD_STEP = 10.0            # дальше шаг 10% в обе стороны
 LOSS_AFTER_SEC = 180      # нет пакетов дольше 3 минут = потеря связи
-POLL_SEC = 5
+POLL_SEC = 1              # проверка каждую секунду без задержек
 CLEARING = (23 * 60 + 55, 5)          # клиринг: с 23:55 до 00:05
 WEEKEND_FROM = (4, 23 * 60 + 59)      # с пятницы 23:59
 WEEKEND_TO = (6, 23 * 60 + 59)        # до воскресенья 23:59
@@ -71,7 +72,12 @@ def send(text):
         LAST["err"] = "не заданы TG_TOKEN / TG_CHAT"
         return False
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-    body = json.dumps({"chat_id": TG_CHAT, "text": text, "disable_web_page_preview": True}).encode("utf-8")
+    body = json.dumps({
+        "chat_id": TG_CHAT,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True
+    }).encode("utf-8")
     req = urllib.request.Request(url, body, {"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=8) as r:
@@ -125,11 +131,29 @@ def money(x):
     return str(int(round(x))) if abs(x - round(x)) < 0.005 else f"{x:.2f}"
 
 
-def msg_profit(v, name): return f"💵 +{money(v)}$ ▲ — баланс у {name}"
-def msg_withdraw(v, name): return f"💸 -{money(abs(v))}$ 🔻 — баланс у {name}"
-def msg_dd(dd, up, name): return f"⚔️ -{dd:.2f}% {'🔻' if up else '▲'} — уровень просадки у {name}"
-def msg_lost(name): return f"🆘 {name} терминал не может подключиться к торговому счету! Перезапустите ваш Metatrader"
-def msg_back(name): return f"✅ {name} подключение восстановлено!"
+def pct_str(x):
+    s = f"{x:.2f}".rstrip("0").rstrip(".")
+    return s or "0"
+
+
+def msg_profit(v, name):
+    return f"💵 <b>+{money(v)}$</b> ▲ — баланс у {escape(name)}"
+
+
+def msg_withdraw(v, name):
+    return f"💸 <b>-{money(abs(v))}$</b> 🔻 — баланс у {escape(name)}"
+
+
+def msg_dd(dd, up, name):
+    return f"⚔️ -{pct_str(dd)}% {'🔻' if up else '▲'} — уровень просадки у {escape(name)}"
+
+
+def msg_lost(name):
+    return f"🆘 {escape(name)} терминал не может подключиться к торговому счету! Перезапустите ваш Metatrader"
+
+
+def msg_back(name):
+    return f"✅ {escape(name)} подключение восстановлено!"
 
 
 # ----------------------------------------------------------------- логика
@@ -155,27 +179,41 @@ def process_packet(login, info, st):
     st["name"] = name
     first = st["balance"] is None
 
-    # 1) баланс: прибыль / снятие (за один пакет, копейки игнорируются)
-    if not first:
-        d = bal - st["balance"]
-        if d >= MIN_MOVE_USD:
-            send(msg_profit(d, name))
-        elif d <= -MIN_MOVE_USD:
-            send(msg_withdraw(d, name))
-    st["balance"] = bal
-
-    # 2) просадка: шаг 10% от последнего отправленного уровня
     dd = max(0.0, (bal - eq) / bal * 100.0) if bal > 0 else 0.0
     level = math.floor(dd / DD_STEP) * DD_STEP if dd >= DD_START else 0.0
-    last = st["last_reported_dd"]
+
     if first:
-        st["last_reported_dd"] = level              # после рестарта молча принимаем текущий уровень
-    else:
-        up = dd >= DD_START - 1e-9 if last == 0 else dd >= last + DD_STEP - 1e-9
-        down = last > 0 and dd <= last - DD_STEP + 1e-9
-        if up or down:
-            if send(msg_dd(dd, up, name)):
-                st["last_reported_dd"] = level
+        st["balance"] = bal
+        st["last_reported_dd"] = level      # после рестарта молча принимаем текущий уровень
+        return
+
+    lines = []
+    bal_triggered = False
+    dd_triggered = False
+
+    # 1) баланс: копим разницу от последнего отправленного баланса, пока не наберётся >= $1
+    d = bal - st["balance"]
+    if d >= MIN_MOVE_USD - 1e-9:
+        lines.append(msg_profit(d, name))
+        bal_triggered = True
+    elif d <= -MIN_MOVE_USD + 1e-9:
+        lines.append(msg_withdraw(d, name))
+        bal_triggered = True
+
+    # 2) просадка: шаг 10% от последнего отправленного уровня
+    last = st["last_reported_dd"]
+    up = dd >= DD_START - 1e-9 if last == 0 else dd >= last + DD_STEP - 1e-9
+    down = last > 0 and dd <= last - DD_STEP + 1e-9
+    if up or down:
+        lines.append(msg_dd(dd, up, name))
+        dd_triggered = True
+
+    # отправляем одним сообщением (если сработали оба — будут в 2 строки, как в эталоне)
+    if lines and send("\n".join(lines)):
+        if bal_triggered:
+            st["balance"] = bal
+        if dd_triggered:
+            st["last_reported_dd"] = level
 
 
 def tick():
@@ -251,7 +289,7 @@ def init(main_module, app):
     def tg_test(p: str = ""):
         if not allowed(p):
             return JSONResponse({"status": "error", "detail": "bad pass"}, status_code=403)
-        ok = send("✅ GTrade: тестовое сообщение, связь с Telegram работает")
+        ok = send("✅ <b>GTrade</b>: тестовое сообщение, связь с Telegram работает")
         return {"ok": ok, "error": LAST["err"]}
 
     def tg_status(p: str = ""):
