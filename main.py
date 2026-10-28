@@ -449,7 +449,7 @@ def swarm_view(cs, cur):
   <div class="sw-hdr">
     <div>
       <div class="sw-title">🐝 ФИНАНСОВАЯ МАТРИЦА «РОЯ СЧЕТОВ»</div>
-      <div class="sw-subtitle">Отчётность с 14.10 · Активных счетов: <b>{len(swarm)}</b> · Свайп влево → Таблица по счетам</div>
+      <div class="sw-subtitle">Отчётность с 14.10 · Активных счетов: <b>{len(swarm)}</b></div>
     </div>
   </div>
 
@@ -1017,7 +1017,7 @@ html.dark .i-moon{display:none}
 .ddbtn:after{content:"";display:inline-block;margin-left:8px;border:4px solid transparent;border-top-color:#fff;vertical-align:-2px}
 .ddbtn.plain:after{display:none}
 body.gm #gm{background:#2ecc71;color:#06260f;border-color:#2ecc71}
-.ddm{display:none;position:absolute;top:38px;left:0;background:var(--ddbg);border-radius:3px;box-shadow:0 3px 12px rgba(0,0,0,.35);z-index:9;min-width:190px}
+.ddm{display:none;position:absolute;top:38px;left:0;background:var(--ddbg);border-radius:3px;box-shadow:0 3px 12px rgba(0,0,0,.35);z-index:9;min-width:160px}
 .ddm.open{display:block}
 .ddm a{display:block;padding:8px 14px;color:var(--tx);cursor:pointer}
 .ddm a:hover{background:var(--hov)}
@@ -1199,6 +1199,8 @@ body.gm .gbox .card{opacity:.55}
 .mhint{color:var(--mu2);font-size:11px;margin-top:8px}
 @media(min-width:930px){.gbox{grid-column:span 2}}
 @media(max-width:880px){
+  /* На телефоне скрываем пункты Роя из выпадающего меню (доступны только свайпом) */
+  .ddm a.pc-only{display:none}
   .gbox .card{padding:7px 8px 5px}
   .gbox .name{font-size:12px}
   .gbox .badge{min-width:18px;padding:0 4px;font-size:11px}
@@ -1250,7 +1252,7 @@ body.gm .gbox .card{opacity:.55}
       <h1><svg viewBox="0 0 24 24"><path d="M12 12a5 5 0 1 0 0-10 5 5 0 0 0 0 10zm0 2c-4 0-8 2-8 5v3h16v-3c0-3-4-5-8-5z"/></svg><span id="ttl" title="Нажмите, чтобы переименовать">__TITLE__</span></h1>
       <div class="dd"><button class="ddbtn" id="ddb">Расширенный</button>
         <button class="ddbtn plain" id="gm" title="Объединить два счёта рядом">Группы</button>
-        <div class="ddm" id="ddm"><a data-v="pro">Расширенный</a><a data-v="swarm">🐝 Матрица Роя</a><a data-v="swarm2">📊 Таблица Роя</a><a data-v="income">Доходы</a><a data-v="simple">Простой</a><a data-v="summary">Сводка</a></div></div>
+        <div class="ddm" id="ddm"><a data-v="pro">Расширенный</a><a data-v="income">Доходы</a><a data-v="simple">Простой</a><a data-v="summary">Сводка</a><a class="pc-only" data-v="swarm">🐝 Матрица Роя</a><a class="pc-only" data-v="swarm2">📊 Таблица Роя</a></div></div>
     </div>
     <div class="hr">
       <button class="btn b-g" id="rf" title="Обновить"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7M21 3v6h-6"/></svg></button>
@@ -1338,10 +1340,15 @@ function showRate(){
 }
 async function loadRate(){try{RATE=await (await fetch('/api/rates',{cache:'no-store'})).json();showRate();}catch(e){}}
 function sync(){
-  $('ddb').textContent=NAMES[VIEW]||NAMES.pro;
+  const mob=window.innerWidth<=880;
+  const v=(mob&&(VIEW==='swarm'||VIEW==='swarm2'))?'pro':VIEW;
+  $('ddb').textContent=NAMES[v]||NAMES.pro;
   $('gm').style.display=VIEW==='pro'?'':'none';
   if(VIEW!=='pro'&&GM){GM=false;SEL=[];applySel();}
-  const u=new URL(location);u.searchParams.set('view',VIEW);u.searchParams.set('cur',CUR);history.replaceState(null,'',u);
+  const u=new URL(location);
+  if(mob&&(VIEW==='swarm'||VIEW==='swarm2'))u.searchParams.delete('view');
+  else u.searchParams.set('view',VIEW);
+  u.searchParams.set('cur',CUR);history.replaceState(null,'',u);
 }
 
 /* ---- время "сек. назад" ---- */
