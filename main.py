@@ -1,4 +1,4 @@
-"""GTrade monitor (Расширенный / Доходы / Простой / Сводка + группы + ночная тема). Диагностика: /debug"""
+"""GTrade monitor (Расширенный / Доходы / Простой / Сводка + группы + ночная тема + Капитал фонда). Диагностика: /debug"""
 import os
 import sys
 import json
@@ -14,7 +14,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 try:
-    import notify          # будущий модуль уведомлений; пока файла нет — ничего не происходит
+    import notify          # модуль уведомлений Telegram
 except Exception:
     notify = None
 
@@ -310,7 +310,7 @@ def calc(login, info, cur):
     return dict(login=login, cur=cur, name=str(S.get("name") or auto_name), custom_name=str(S.get("name") or ""),
                 auto_name=auto_name, since=since, custom_since=str(S.get("since") or ""),
                 broker=str(info.get("company") or ""), ping=int(num(info.get("ping"))),
-                bal=bal, eq=eq, dep=dep, wd=wd, known=known,
+                bal=bal, eq=eq, mg=mg, dep=dep, wd=wd, known=known,
                 dep_manual=S.get("deposits"), wd_manual=S.get("withdrawals"), dep_u=dep_u, wd_u=wd_u,
                 per=per, total=total, tp=tp, dd=dd, ddp=ddp, lvl=lvl, d=d, m=m, y=y,
                 roi=(wd / dep * 100) if known and dep > 0 else None,
@@ -328,7 +328,7 @@ def attrs(c):
             f'data-d="{n(c["dep_manual"])}" data-da="{n(c["dep_u"])}" data-w="{n(c["wd_manual"])}" data-wa="{n(c["wd_u"])}"')
 
 
-BADGE_HINT = {"g": "Торговля идёт", "y": "Сушка", "r": "Алготрейдинг выключен"}
+BADGE_HINT = {"g": "Торговля идёт", "y": "Сушка (Новостной стоп)", "r": "Алготрейдинг выключен"}
 
 
 def age_html(c, short=False):
@@ -360,6 +360,114 @@ def margin_view(c):
     if c["lvl"] is None:
         return "—", ""
     return f"{c['lvl']:.0f}%", ("pos" if c["lvl"] >= 100 else "neg")
+
+
+# ---------------------------------------------------------------- сводная эффективность общего капитала фонда
+def fund_panel_html(cs, cur):
+    r = RATES.get(cur, 1.0)
+    F = SETTINGS.get("_fund", {})
+    if not isinstance(F, dict):
+        F = {}
+    # Поправки на закрытые/слитые в прошлом счета (которых уже нет в списке активных)
+    ex_dep_u = num(F.get("deposits"), 0.0)
+    ex_wd_u = num(F.get("withdrawals"), 0.0)
+
+    bal = sum(c["bal"] for c in cs)
+    eq = sum(c["eq"] for c in cs)
+    mg = sum(c["mg"] for c in cs)
+    dep = sum(c["dep"] for c in cs) + ex_dep_u * r
+    wd = sum(c["wd"] for c in cs) + ex_wd_u * r
+
+    # Чистая прибыль (без пополнений!):
+    # По балансу = (Текущий баланс + Выведено) - Вложено
+    # По эквити (реальная прямо сейчас с учётом плавающей просадки и прошлых сливов) = (Текущее эквити + Выведено) - Вложено
+    net_bal = bal + wd - dep
+    net_eq = eq + wd - dep
+    roi_bal = (net_bal / dep * 100.0) if dep > 0 else 0.0
+    roi_eq = (net_eq / dep * 100.0) if dep > 0 else 0.0
+
+    # Окупаемость (сколько % вложенного уже выведено в карман)
+    payback_pct = (wd / dep * 100.0) if dep > 0 else 0.0
+    own_at_risk = dep - wd  # сколько своих невыведенных денег ещё в риске
+
+    # Плавающая просадка по всему фонду
+    dd_val = min(0.0, eq - bal)
+    dd_pct = (dd_val / bal * 100.0) if bal > 0 else 0.0
+    dd_cls = {"g": "pos", "y": "yel", "r": "neg"}[dd_tone(dd_pct)]
+
+    # КПД загрузки маржи и темп дохода (день / месяц ко всему задействованному капиталу)
+    mg_load = (mg / eq * 100.0) if eq > 0 else 0.0
+    day_v = sum(c["per"]["day"]["c"] or 0.0 for c in cs)
+    mon_v = sum(c["per"]["month"]["c"] or 0.0 for c in cs)
+    base_cap = dep if dep > 0 else (bal if bal > 0 else 1.0)
+    day_pct = day_v / base_cap * 100.0
+    mon_pct = mon_v / base_cap * 100.0
+
+    sush_cnt = sum(1 for c in cs if c["sush"] == 1)
+    sush_badge = f' <span class="fp-sush">Сушка: {sush_cnt}</span>' if sush_cnt else ""
+
+    if own_at_risk > 0.005:
+        risk_val = fmt_money(own_at_risk, cur)
+        risk_sub = f"осталось вывести до безубытка ({max(0.0, 100.0 - payback_pct):.1f}%)"
+        risk_cls = "yel"
+    else:
+        risk_val = fmt_money(abs(own_at_risk), cur)
+        risk_sub = "Капитал окупился! Чистый плюс в кармане"
+        risk_cls = "pos"
+
+    f_d = "" if not ex_dep_u else f"{ex_dep_u:.2f}"
+    f_w = "" if not ex_wd_u else f"{ex_wd_u:.2f}"
+
+    return f'''<div class="card fp" id="fpanel" data-fd="{f_d}" data-fw="{f_w}">
+  <div class="fp-top" id="fptog" title="Нажмите, чтобы свернуть / развернуть сводку капитала">
+    <div class="fp-ttl">
+      <span class="fp-ic">💼</span>
+      <b>Эффективность капитала фонда</b>{sush_badge}
+    </div>
+    <div class="fp-brief">
+      <span>В работе: <b>{fmt_money(eq, cur)}</b></span>
+      <span>Чистая прибыль: <b class="{cls(net_bal)}">{fmt_money(net_bal, cur)} ({fmt_pct(roi_bal)})</b></span>
+      <span>Выведено: <b class="pos">{fmt_money(wd, cur)} ({payback_pct:.1f}%)</b></span>
+      <button class="fp-ed" id="fped" title="Учёт закрытых/слитых в прошлом счетов">✎</button>
+      <span class="fp-arr">▼</span>
+    </div>
+  </div>
+  <div class="fp-body">
+    <div class="fp-grid">
+      <div class="fp-box">
+        <div class="fp-lb">1. Всего вложено (Инвест)</div>
+        <div class="fp-v">{fmt_money(dep, cur)}</div>
+        <div class="fp-sub">Сумма всех пополнений ({len(cs)} активн. счетов)</div>
+      </div>
+      <div class="fp-box">
+        <div class="fp-lb">2. Выведено (Кэшаут)</div>
+        <div class="fp-v pos">{fmt_money(wd, cur)}</div>
+        <div class="fp-sub">Окупаемость вложений: <b>{payback_pct:.1f}%</b></div>
+        <div class="fp-bar"><i style="width:{min(100.0, max(0.0, payback_pct)):.1f}%"></i></div>
+      </div>
+      <div class="fp-box">
+        <div class="fp-lb">3. Свои деньги в риске</div>
+        <div class="fp-v {risk_cls}">{risk_val}</div>
+        <div class="fp-sub">{risk_sub}</div>
+      </div>
+      <div class="fp-box">
+        <div class="fp-lb">4. Сейчас на счетах (Эквити)</div>
+        <div class="fp-v">{fmt_money(eq, cur)}</div>
+        <div class="fp-sub">Баланс: <b>{fmt_money(bal, cur)}</b> · Просадка: <b class="{dd_cls}">{dd_pct:.2f}% ({fmt_money(dd_val, cur)})</b></div>
+      </div>
+      <div class="fp-box">
+        <div class="fp-lb">5. Чистая прибыль (без пополнений)</div>
+        <div class="fp-v {cls(net_bal)}">{fmt_money(net_bal, cur)} <small>({fmt_pct(roi_bal)})</small></div>
+        <div class="fp-sub">По эквити сейчас: <b class="{cls(net_eq)}">{fmt_money(net_eq, cur)} ({fmt_pct(roi_eq)})</b></div>
+      </div>
+      <div class="fp-box">
+        <div class="fp-lb">6. КПД и темп на весь капитал</div>
+        <div class="fp-v {cls(mon_v)}">{fmt_money(mon_v, cur)} <small>({fmt_pct(mon_pct)} / мес)</small></div>
+        <div class="fp-sub">Сегодня: <b class="{cls(day_v)}">{fmt_money(day_v, cur)} ({fmt_pct(day_pct)})</b> · В сделках: <b>{mg_load:.1f}%</b></div>
+      </div>
+    </div>
+  </div>
+</div>'''
 
 
 def pro_card(c, drag=False):
@@ -394,7 +502,7 @@ def pro_card(c, drag=False):
 </div>'''
 
 
-def pro_view(cs):
+def pro_view(cs, cur):
     by = {str(c["login"]): c for c in cs}
     groups = get_groups()
     gmap = {}
@@ -422,7 +530,7 @@ def pro_view(cs):
             f'<span class="gb"><button class="gx gswap" data-gid="{gid}" title="Поменять местами">⇄</button>'
             f'<button class="gx gdel" data-gid="{gid}" title="Разгруппировать">✕</button></span></div>'
             f'<div class="gcards">{"".join(pro_card(m) for m in members)}</div></div>')
-    return f'<div class="grid">{"".join(parts)}</div>'
+    return f'{fund_panel_html(cs, cur)}<div class="grid">{"".join(parts)}</div>'
 
 
 def simple_card(c):
@@ -545,13 +653,14 @@ def render_body(view, cur):
     cs = [calc(login, info, cur) for login, info in list(accounts_data.items())]
     cs.sort(key=login_sort_key)
     if view == "income":
-        return (f'<div class="grid">{total_card(cs, cur)}</div>'
+        return (f'{fund_panel_html(cs, cur)}'
+                f'<div class="grid">{total_card(cs, cur)}</div>'
                 f'<div class="grid inc">{"".join(income_card(c) for c in cs)}</div>')
     if view == "simple":
         return f'<div class="grid sg">{"".join(simple_card(c) for c in cs)}</div>'
     if view == "summary":
         return f'<div class="grid sgrid">{summary_html(cs, cur)}</div>'
-    return pro_view(cs)
+    return pro_view(cs, cur)
 
 
 VIEWS = {"pro": "pro", "income": "income", "inc": "income", "доходы": "income",
@@ -634,7 +743,7 @@ async def set_settings(request: Request):
         if ADMIN_PASS and str(data.get("pass", "")) != ADMIN_PASS:
             return JSONResponse({"status": "error", "detail": "bad pass"}, status_code=403)
         login = str(data.get("login", "")).strip()
-        if not login or (login.startswith("_") and login != "_page"):
+        if not login or (login.startswith("_") and login not in ("_page", "_fund")):
             return {"status": "error"}
         s = {}
         for key in ("name", "since"):
@@ -728,7 +837,7 @@ def debug():
             text = f"OK: {v}" if v is not None else "НЕТ ДАННЫХ"
             out.append(f"<tr><td>{escape(title)}</td><td style='color:{color}'>{text}</td></tr>")
         pairs = info.get("pairs")
-        pc = len(pairs) if isinstance(pairs, dict) else 0
+        pc = len(pairs) if isinstance(pairs) else 0
         color = "#1a9c55" if pc else "#d01040"
         out.append(f"<tr><td>pairs (пары)</td><td style='color:{color}'>{pc} шт.</td></tr></table>")
         out.append(f"<p style='color:#555'>Все поля в пакете: {escape(', '.join(map(str, info.keys())))}</p>")
@@ -762,12 +871,12 @@ PAGE = r"""<!doctype html>
   --bg1:#e2eaf2;--bg2:#d5dfea;--card:#fff;--cardbd:transparent;--tx:#2b2f36;--st:#222;--mu:#888;--mu2:#999;
   --ln:#eef0f3;--ln2:#d5dbe4;--inp:#fff;--inpbd:#c5cedd;--ddbg:#fff;--hov:#eef2fb;--sh:rgba(40,60,90,.25);
   --th:#1f2328;--ago:#5fd39a;--totbg:linear-gradient(180deg,#adc3f3 0%,#dde8f8 45%,#d9f6e8 100%);
-  --gbd:rgba(63,124,240,.22)}
+  --gbd:rgba(63,124,240,.22);--fpbox:#f5f8fc;--fpbd:#e1e8f2}
 html.dark{--green:#34d986;--red:#ff4d70;--yellow:#f5b800;--blue:#7b95ff;--blue2:#3db8ff;
   --bg1:#070d1a;--bg2:#0f1a30;--card:#141d2f;--cardbd:#23324d;--tx:#d6deec;--st:#f0f4fb;--mu:#8793a8;--mu2:#7c889d;
   --ln:#1f2b42;--ln2:#26344d;--inp:#0e1626;--inpbd:#2c3c5a;--ddbg:#16213a;--hov:#1d2b49;--sh:rgba(0,0,0,.5);
   --th:#0a111f;--ago:#4fd69a;--totbg:linear-gradient(180deg,#25365f 0%,#18233c 55%,#143229 100%);
-  --gbd:rgba(123,149,255,.25)}
+  --gbd:rgba(123,149,255,.25);--fpbox:#0e1626;--fpbd:#22314e}
 *{box-sizing:border-box}
 html{background:var(--bg2)}
 body{margin:0;font:13px/1.35 "Open Sans","Segoe UI",Roboto,Arial,sans-serif;color:var(--tx);
@@ -830,7 +939,7 @@ body.gm #gm{background:#2ecc71;color:#06260f;border-color:#2ecc71}
 .ed{cursor:pointer}
 .name.ed:hover{text-decoration:underline dotted}
 .badge{display:inline-block;min-width:22px;padding:0 6px;margin-left:4px;border-radius:12px;color:#fff;font-weight:600;font-size:12px;text-align:center}
-.g{background:var(--green)}.r{background:var(--red)}.y{background:#f6b90f}
+.g{background:var(--green)}.r{background:var(--red)}.y{background:#f6b90f;color:#111}
 .since{color:var(--mu2);font-size:11px}
 .dt{color:var(--mu);font-size:10.5px;text-align:right}
 .mi{color:var(--mu);font-size:13px;display:block;text-align:right;line-height:1}
@@ -861,6 +970,28 @@ body.gm #gm{background:#2ecc71;color:#06260f;border-color:#2ecc71}
 .foot{display:flex;justify-content:space-between;margin-top:auto;padding-top:8px;font-size:9.5px}
 .foot .br{color:var(--mu2)}
 .ag{color:var(--ago)}.ag.stale{color:var(--red)}
+/* панель эффективности капитала фонда */
+.fp{margin-top:12px;padding:10px 14px;border-left:3px solid #00e5ff}
+.fp-top{display:flex;justify-content:space-between;align-items:center;gap:10px;cursor:pointer;flex-wrap:wrap}
+.fp-ttl{display:flex;align-items:center;gap:7px;font-size:13.5px;color:var(--st)}
+.fp-sush{background:#f6b90f;color:#111;font-weight:700;font-size:11px;padding:1px 7px;border-radius:10px}
+.fp-brief{display:flex;align-items:center;gap:14px;flex-wrap:wrap;font-size:12.5px;color:var(--mu)}
+.fp-brief b{color:var(--st)}
+.fp-ed{border:1px solid var(--ln2);background:var(--fpbox);color:var(--tx);border-radius:4px;cursor:pointer;padding:2px 7px;font-size:12px}
+.fp-ed:hover{background:var(--hov)}
+.fp-arr{font-size:11px;color:var(--mu);transition:transform .2s}
+.fp.closed .fp-body{display:none}
+.fp.closed .fp-arr{transform:rotate(-90deg)}
+.fp-body{margin-top:10px;padding-top:10px;border-top:1px solid var(--ln)}
+.fp-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:8px}
+.fp-box{background:var(--fpbox);border:1px solid var(--fpbd);border-radius:5px;padding:8px 11px}
+.fp-lb{font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:.3px}
+.fp-v{font-size:19px;font-weight:700;color:var(--st);margin-top:2px;line-height:1.2}
+.fp-v small{font-size:13px;font-weight:600}
+.fp-sub{font-size:11px;color:var(--mu);margin-top:3px}
+.fp-sub b{color:var(--tx)}
+.fp-bar{height:5px;background:var(--ln2);border-radius:3px;overflow:hidden;margin-top:5px}
+.fp-bar i{display:block;height:100%;background:linear-gradient(90deg,#28c76f,#00e5ff)}
 /* простой: компактная строка */
 .sc{flex-direction:row;align-items:center;gap:10px;padding:6px 22px 6px 12px;min-height:48px}
 .sc .c1{flex:1;min-width:0}
@@ -971,6 +1102,8 @@ body.gm .gbox .card{opacity:.55}
   .wrap{padding:6px 6px 70px}
   .grid{gap:8px;margin-top:8px}
   .grid.inc{margin-top:8px}
+  .fp{margin-top:8px;padding:8px 10px}
+  .fp-brief{gap:8px;font-size:11.5px}
   .card{padding:9px 12px 6px}
   .tot{padding:8px 12px 6px}
   .ic{padding:8px 12px 5px}
@@ -1012,12 +1145,12 @@ body.gm .gbox .card{opacity:.55}
 <div id="gbar"><span id="gtx">Выберите 2 счёта (0/2)</span><button id="gok" disabled>Объединить</button><button id="gend">Готово</button></div>
 <div class="mdl" id="mdl"><div class="mbox">
   <h3>Настройки счёта <span id="mlog"></span></h3>
-  <label>Название<input id="f_name"></label>
-  <label>Работает с (дд.мм.гггг)<input id="f_since"></label>
-  <label>Пополнения, $ (в долларах)<input id="f_dep" inputmode="decimal"></label>
-  <label>Снятия, $ (в долларах)<input id="f_wd" inputmode="decimal"></label>
+  <label id="l_name">Название<input id="f_name"></label>
+  <label id="l_since">Работает с (дд.мм.гггг)<input id="f_since"></label>
+  <label id="l_dep">Пополнения, $ (в долларах)<input id="f_dep" inputmode="decimal"></label>
+  <label id="l_wd">Снятия, $ (в долларах)<input id="f_wd" inputmode="decimal"></label>
   <div class="mbtn"><button id="m_save">Сохранить</button><button id="m_cancel">Отмена</button></div>
-  <div class="mhint">Пустое поле = брать данные от робота автоматически</div>
+  <div class="mhint" id="m_hint">Пустое поле = брать данные от робота автоматически</div>
 </div></div>
 <script>
 let VIEW="__VIEW__", CUR="__CUR__", EDIT=null, RATE=null, GM=false, SEL=[], DRAG=null;
@@ -1034,6 +1167,14 @@ $('th').onclick=()=>{
   document.documentElement.classList.toggle('dark',d);
   try{localStorage.setItem('fxtheme',d?'dark':'light');}catch(e){}
 };
+
+/* ---- сворачивание панели капитала фонда ---- */
+function applyFundState(){
+  const fp=$('fpanel');
+  if(!fp)return;
+  const closed=localStorage.getItem('fxfp_closed')==='1';
+  fp.classList.toggle('closed',closed);
+}
 
 /* ---- валюта ---- */
 function drawCur(){
@@ -1065,7 +1206,7 @@ async function load(){
   if(DRAG)return;
   $('rf').classList.add('spin');setTimeout(()=>$('rf').classList.remove('spin'),800);
   try{const r=await fetch('/fragment?view='+VIEW+'&cur='+CUR,{cache:'no-store'});
-    if(r.ok){const t=await r.text();if(!DRAG){$('app').innerHTML=t;stamp();applySel();}}}catch(e){}
+    if(r.ok){const t=await r.text();if(!DRAG){$('app').innerHTML=t;stamp();applySel();applyFundState();}}}catch(e){}
 }
 
 /* ---- запросы с паролем ---- */
@@ -1090,16 +1231,44 @@ $('ttl').onclick=async()=>{
   }else alert('Не удалось сохранить');
 };
 
-/* ---- настройки счёта ---- */
+/* ---- настройки счёта и поправки фонда ---- */
 document.addEventListener('click',e=>{
+  const fped=e.target.closest('#fped');
+  if(fped){
+    e.stopPropagation();
+    const fp=$('fpanel');
+    EDIT='_fund';
+    $('mlog').textContent='(Поправки по закрытым/слитым счетам)';
+    $('l_name').style.display='none';
+    $('l_since').style.display='none';
+    $('f_name').value='';$('f_since').value='';
+    $('f_dep').value=(fp&&fp.dataset.fd)||'';$('f_dep').placeholder='0 (доп. вложено в закрытые счета, $)';
+    $('f_wd').value=(fp&&fp.dataset.fw)||'';$('f_wd').placeholder='0 (доп. выведено с закрытых счетов, $)';
+    $('m_hint').textContent='Если какой-то старый счёт был закрыт или слит и удалён с мониторинга, укажите здесь его пополнения/снятия, чтобы общий отчёт фонда был точным.';
+    $('mdl').classList.add('open');$('f_dep').focus();
+    return;
+  }
+  const fptog=e.target.closest('#fptog');
+  if(fptog){
+    const fp=$('fpanel');
+    if(fp){
+      const cl=!fp.classList.contains('closed');
+      fp.classList.toggle('closed',cl);
+      try{localStorage.setItem('fxfp_closed',cl?'1':'0');}catch(_){}
+    }
+    return;
+  }
   const t=e.target.closest('.ed');if(!t)return;
   const c=t.closest('[data-login]');if(!c)return;
   const d=c.dataset;EDIT=d.login;
   $('mlog').textContent='#'+EDIT;
+  $('l_name').style.display='';
+  $('l_since').style.display='';
   $('f_name').value=d.n||'';$('f_name').placeholder=d.na||'';
   $('f_since').value=d.s||'';$('f_since').placeholder=d.sa||'например 15.11.2024';
   $('f_dep').value=d.d||'';$('f_dep').placeholder=d.da?('авто: '+d.da):'не задано';
   $('f_wd').value=d.w||'';$('f_wd').placeholder=d.wa?('авто: '+d.wa):'не задано';
+  $('m_hint').textContent='Пустое поле = брать данные от робота автоматически';
   $('mdl').classList.add('open');$('f_name').focus();
 });
 $('m_cancel').onclick=()=>$('mdl').classList.remove('open');
@@ -1208,7 +1377,7 @@ $('ddb').onclick=e=>{e.stopPropagation();$('ddm').classList.toggle('open');};
 document.querySelectorAll('#ddm a').forEach(a=>a.onclick=()=>{VIEW=a.dataset.v;sync();load();});
 document.addEventListener('click',()=>$('ddm').classList.remove('open'));
 $('rf').onclick=load;
-drawCur();sync();applySel();stamp();loadRate();restore();restoreGroups();
+drawCur();sync();applySel();applyFundState();stamp();loadRate();restore();restoreGroups();
 setInterval(tick,1000);setInterval(load,3000);setInterval(loadRate,600000);
 if(CUR!=='__CUR__')load();
 </script></body></html>"""
