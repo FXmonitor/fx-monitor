@@ -1,4 +1,4 @@
-"""GTrade monitor (Расширенный / Доходы / Простой / Сводка + группы + ночная тема + Капитал фонда). Диагностика: /debug"""
+"""GTrade monitor (Расширенный / Матрица Роя / Доходы / Простой / Сводка + группы + ночная тема). Диагностика: /debug"""
 import os
 import sys
 import json
@@ -41,6 +41,10 @@ except Exception:
 SYMS = {"USD": "$", "RUB": "₽"}
 GREEN_AT, YELLOW_AT = 2.0, 10.0                 # пороги плиток пар (в %): до 2 зелёный, 2-10 жёлтый, выше красный
 DD_GREEN_BELOW, DD_YELLOW_BELOW = 10.0, 30.0    # пороги крупной просадки на карточке
+
+# Счета, которые заведомо НЕ входят в авторский "Рой счетов" (старые счета до 14.10)
+OLD_LOGINS = {"105149", "105150", "105481"}
+SWARM_KEYS = ("ARGON", "EURUSD", "USDCAD", "EURGBP", "AUDNZD", "AUDCAD", "GBPAUD")
 
 ORDER_KEYS = ("tot_orders", "total_orders", "orders_total", "orders", "positions", "open_orders")
 PERIOD_KEYS = {
@@ -207,6 +211,27 @@ def login_sort_key(c):
     return (0, int(s), "") if s.isdigit() else (1, 0, s)
 
 
+def is_swarm_account(login, name, since_dt, swarm_flag):
+    """Определяет, входит ли счёт в авторский 'Рой счетов' (с 14.10)."""
+    if swarm_flag == "1":
+        return True
+    if swarm_flag == "0":
+        return False
+    s_login = str(login).strip()
+    if s_login in OLD_LOGINS:
+        return False
+    up_name = str(name).upper()
+    if any(old_w in up_name for old_w in ("CLASSIC", "KRYSTAL", "KING")):
+        return False
+    if since_dt is not None:
+        # Если указана дата старта: берём счета от 14 октября (года старта) и новее
+        cutoff = datetime(since_dt.year, 10, 14)
+        return since_dt >= cutoff
+    if any(k in up_name for k in SWARM_KEYS):
+        return True
+    return True
+
+
 def calc(login, info, cur):
     r = RATES.get(cur, 1.0)
     kb = 0.01 if CENT else 1.0
@@ -250,7 +275,8 @@ def calc(login, info, cur):
 
     since = str(S.get("since") or info.get("since") or "")
     sd = parse_date(since)
-    months = max((datetime.now() - sd).days / 30.4, 1.0) if sd else 0.0
+    days_active = max((now_local() - sd).days, 1) if sd else 14
+    months = max(days_active / 30.4, 1.0) if sd else 0.0
     mp = first_num(info, ("monthly_pct",))
     if mp is not None:
         m = mp
@@ -306,9 +332,14 @@ def calc(login, info, cur):
         bcol = "g"
 
     auto_name = str(info.get("name") or info.get("label") or f"Счёт {login}")
+    disp_name = str(S.get("name") or auto_name)
+    swarm_flag = str(S.get("swarm") or "")
+    in_swarm = is_swarm_account(login, disp_name, sd, swarm_flag)
+
     ts = last_seen.get(login, time.time())
-    return dict(login=login, cur=cur, name=str(S.get("name") or auto_name), custom_name=str(S.get("name") or ""),
+    return dict(login=login, cur=cur, name=disp_name, custom_name=str(S.get("name") or ""),
                 auto_name=auto_name, since=since, custom_since=str(S.get("since") or ""),
+                swarm_flag=swarm_flag, in_swarm=in_swarm, days_active=days_active,
                 broker=str(info.get("company") or ""), ping=int(num(info.get("ping"))),
                 bal=bal, eq=eq, mg=mg, dep=dep, wd=wd, known=known,
                 dep_manual=S.get("deposits"), wd_manual=S.get("withdrawals"), dep_u=dep_u, wd_u=wd_u,
@@ -325,7 +356,8 @@ def attrs(c):
         return "" if v is None else f"{v:.2f}"
     return (f'data-login="{escape(str(c["login"]))}" data-n="{escape(c["custom_name"])}" data-na="{escape(c["auto_name"])}" '
             f'data-s="{escape(c["custom_since"])}" data-sa="{escape(c["since"])}" '
-            f'data-d="{n(c["dep_manual"])}" data-da="{n(c["dep_u"])}" data-w="{n(c["wd_manual"])}" data-wa="{n(c["wd_u"])}"')
+            f'data-d="{n(c["dep_manual"])}" data-da="{n(c["dep_u"])}" data-w="{n(c["wd_manual"])}" data-wa="{n(c["wd_u"])}" '
+            f'data-sw="{escape(c["swarm_flag"])}"')
 
 
 BADGE_HINT = {"g": "Торговля идёт", "y": "Сушка (Новостной стоп)", "r": "Алготрейдинг выключен"}
@@ -362,110 +394,167 @@ def margin_view(c):
     return f"{c['lvl']:.0f}%", ("pos" if c["lvl"] >= 100 else "neg")
 
 
-# ---------------------------------------------------------------- сводная эффективность общего капитала фонда
-def fund_panel_html(cs, cur):
-    r = RATES.get(cur, 1.0)
-    F = SETTINGS.get("_fund", {})
-    if not isinstance(F, dict):
-        F = {}
-    # Поправки на закрытые/слитые в прошлом счета (которых уже нет в списке активных)
-    ex_dep_u = num(F.get("deposits"), 0.0)
-    ex_wd_u = num(F.get("withdrawals"), 0.0)
+# ---------------------------------------------------------------- ФИНАНСОВАЯ МАТРИЦА РОЯ (свайп-экран)
+def swarm_view(cs, cur):
+    swarm = [c for c in cs if c["in_swarm"]]
+    excluded = [c for c in cs if not c["in_swarm"]]
 
-    bal = sum(c["bal"] for c in cs)
-    eq = sum(c["eq"] for c in cs)
-    mg = sum(c["mg"] for c in cs)
-    dep = sum(c["dep"] for c in cs) + ex_dep_u * r
-    wd = sum(c["wd"] for c in cs) + ex_wd_u * r
+    bal = sum(c["bal"] for c in swarm)
+    eq = sum(c["eq"] for c in swarm)
+    # Если по какому-то счёту история пополнений ещё не пришла (0), берём баланс как стартовый вклад
+    dep = sum(c["dep"] if c["dep"] > 0 else c["bal"] for c in swarm)
+    wd = sum(c["wd"] for c in swarm)
 
-    # Чистая прибыль (без пополнений!):
-    # По балансу = (Текущий баланс + Выведено) - Вложено
-    # По эквити (реальная прямо сейчас с учётом плавающей просадки и прошлых сливов) = (Текущее эквити + Выведено) - Вложено
-    net_bal = bal + wd - dep
-    net_eq = eq + wd - dep
-    roi_bal = (net_bal / dep * 100.0) if dep > 0 else 0.0
-    roi_eq = (net_eq / dep * 100.0) if dep > 0 else 0.0
-
-    # Окупаемость (сколько % вложенного уже выведено в карман)
-    payback_pct = (wd / dep * 100.0) if dep > 0 else 0.0
-    own_at_risk = dep - wd  # сколько своих невыведенных денег ещё в риске
-
-    # Плавающая просадка по всему фонду
+    # 1) Общая плавающая просадка Роя
     dd_val = min(0.0, eq - bal)
     dd_pct = (dd_val / bal * 100.0) if bal > 0 else 0.0
     dd_cls = {"g": "pos", "y": "yel", "r": "neg"}[dd_tone(dd_pct)]
 
-    # КПД загрузки маржи и темп дохода (день / месяц ко всему задействованному капиталу)
-    mg_load = (mg / eq * 100.0) if eq > 0 else 0.0
-    day_v = sum(c["per"]["day"]["c"] or 0.0 for c in cs)
-    mon_v = sum(c["per"]["month"]["c"] or 0.0 for c in cs)
-    base_cap = dep if dep > 0 else (bal if bal > 0 else 1.0)
-    day_pct = day_v / base_cap * 100.0
-    mon_pct = mon_v / base_cap * 100.0
+    # 2) Чистая созданная прибыль (без учёта пополнений!)
+    net_profit = (bal + wd) - dep
+    net_eq_profit = (eq + wd) - dep
+    net_roi = (net_profit / dep * 100.0) if dep > 0 else 0.0
+    net_eq_roi = (net_eq_profit / dep * 100.0) if dep > 0 else 0.0
 
-    sush_cnt = sum(1 for c in cs if c["sush"] == 1)
-    sush_badge = f' <span class="fp-sush">Сушка: {sush_cnt}</span>' if sush_cnt else ""
+    # 3) Окупаемость и Калькулятор Безубытка
+    payback_pct = (wd / dep * 100.0) if dep > 0 else 0.0
+    left_to_be = max(0.0, dep - wd)
+    bar_w = min(100.0, max(0.0, payback_pct))
 
-    if own_at_risk > 0.005:
-        risk_val = fmt_money(own_at_risk, cur)
-        risk_sub = f"осталось вывести до безубытка ({max(0.0, 100.0 - payback_pct):.1f}%)"
-        risk_cls = "yel"
+    # Дней работы Роя с 14.10 (или максимум из счетов Роя)
+    now_dt = now_local()
+    swarm_start = datetime(now_dt.year if now_dt.month >= 10 else now_dt.year - 1, 10, 14)
+    swarm_days = max(1, (now_dt - swarm_start).days)
+    avg_daily_profit = net_profit / swarm_days if net_profit > 0 else 0.0
+    monthly_roi = (net_roi / swarm_days) * 30.0 if swarm_days > 0 else 0.0
+
+    if dep > 0 and left_to_be <= 0.005:
+        be_forecast = "✅ <b>100% БЕЗУБЫТОК ПРОЙДЕН!</b> Вложенный капитал полностью вернулся в карман."
+    elif avg_daily_profit > 0.01:
+        days_left = int(round(left_to_be / avg_daily_profit))
+        be_forecast = (f"⏳ До 100% возврата тела инвестиций: <b>~{days_left} дн.</b> "
+                       f"(при текущем темпе <b>{fmt_money(avg_daily_profit, cur)}/день</b>)")
     else:
-        risk_val = fmt_money(abs(own_at_risk), cur)
-        risk_sub = "Капитал окупился! Чистый плюс в кармане"
-        risk_cls = "pos"
+        be_forecast = "⏳ Накапливаем статистику закрытых сделок для расчёта точного темпа окупаемости"
 
-    f_d = "" if not ex_dep_u else f"{ex_dep_u:.2f}"
-    f_w = "" if not ex_wd_u else f"{ex_wd_u:.2f}"
+    # Строки таблицы по каждому счёту Роя
+    rows_html = ""
+    for c in swarm:
+        c_dep = c["dep"] if c["dep"] > 0 else c["bal"]
+        c_wd = c["wd"]
+        c_net = (c["bal"] + c_wd) - c_dep
+        c_roi = (c_net / c_dep * 100.0) if c_dep > 0 else 0.0
+        c_ddcls = {"g": "pos", "y": "yel", "r": "neg"}[dd_tone(c["ddp"])]
+        pair_tags = " · ".join(s["name"] for s in c["syms"]) if c["syms"] else "Ожидание сделок"
 
-    return f'''<div class="card fp" id="fpanel" data-fd="{f_d}" data-fw="{f_w}">
-  <div class="fp-top" id="fptog" title="Нажмите, чтобы свернуть / развернуть сводку капитала">
-    <div class="fp-ttl">
-      <span class="fp-ic">💼</span>
-      <b>Эффективность капитала фонда</b>{sush_badge}
+        rows_html += f'''<tr {attrs(c)}>
+  <td>
+    <div class="sw-nm">{head_html(c)} <span class="mi ed sw-ed" title="Настройки счёта">☰</span></div>
+    <div class="sw-sub">{escape(pair_tags)}</div>
+  </td>
+  <td>
+    <div class="sw-m">{fmt_money(c["bal"], cur)}</div>
+    <div class="sw-sub">Эквити: <b>{fmt_money(c["eq"], cur)}</b> (<span class="{c_ddcls}">{c["ddp"]:.2f}%</span>)</div>
+  </td>
+  <td><div class="sw-m">{fmt_money(c_dep, cur)}</div></td>
+  <td><div class="sw-m pos">{fmt_money(c_wd, cur)}</div></td>
+  <td>
+    <div class="sw-m {cls(c_net)}">{fmt_money(c_net, cur)}</div>
+    <div class="sw-sub {cls(c_roi)}">{fmt_pct(c_roi)}</div>
+  </td>
+</tr>'''
+
+    if not rows_html:
+        rows_html = '<tr><td colspan="5" style="text-align:center;padding:18px;color:var(--mu)">Нет активных счетов Роя. Включите нужные счета через ☰ → «В Матрице Роя: Да».</td></tr>'
+
+    excl_note = ""
+    if excluded:
+        names_ex = ", ".join(escape(x["name"]) for x in excluded)
+        excl_note = f'<div class="sw-foot">Старые счета вне Матрицы Роя ({len(excluded)} шт., до 14.10): {names_ex}. Изменить состав можно через ☰ на любом счёте.</div>'
+
+    return f'''<div class="sw-wrap">
+  <div class="sw-hdr">
+    <div>
+      <div class="sw-title">🐝 ФИНАНСОВАЯ МАТРИЦА «РОЯ СЧЕТОВ»</div>
+      <div class="sw-subtitle">Отчётность с 14.10 · Активных счетов в Рое: <b>{len(swarm)}</b> · Свайп вправо → возврат к счетам</div>
     </div>
-    <div class="fp-brief">
-      <span>В работе: <b>{fmt_money(eq, cur)}</b></span>
-      <span>Чистая прибыль: <b class="{cls(net_bal)}">{fmt_money(net_bal, cur)} ({fmt_pct(roi_bal)})</b></span>
-      <span>Выведено: <b class="pos">{fmt_money(wd, cur)} ({payback_pct:.1f}%)</b></span>
-      <button class="fp-ed" id="fped" title="Учёт закрытых/слитых в прошлом счетов">✎</button>
-      <span class="fp-arr">▼</span>
+    <button class="ddbtn plain" onclick="setView('pro')">← К счетам</button>
+  </div>
+
+  <!-- БЛОК 1: 3 НЕОНОВЫХ ВИДЖЕТА ЗДОРОВЬЯ И ОКУПАЕМОСТИ -->
+  <div class="sw-cards">
+    <div class="card sw-card sw-c1">
+      <div class="sw-clb">🌊 ОБЩАЯ ПЛАВАЮЩАЯ ПРОСАДКА РОЯ</div>
+      <div class="sw-big {dd_cls}">{fmt_money(dd_val, cur)} <small>({dd_pct:.2f}%)</small></div>
+      <div class="sw-cmeta">
+        <span>Общий Баланс Роя: <b>{fmt_money(bal, cur)}</b></span>
+        <span>Общее Эквити Роя: <b>{fmt_money(eq, cur)}</b></span>
+      </div>
+    </div>
+
+    <div class="card sw-card sw-c2">
+      <div class="sw-clb">💵 ЧИСТАЯ ПРИБЫЛЬ ВСЕГО (БЕЗ ПОПОЛНЕНИЙ)</div>
+      <div class="sw-big {cls(net_profit)}">{fmt_money(net_profit, cur)} <small>({fmt_pct(net_roi)})</small></div>
+      <div class="sw-cmeta">
+        <span>С учётом текущей просадки (по эквити): <b class="{cls(net_eq_profit)}">{fmt_money(net_eq_profit, cur)} ({fmt_pct(net_eq_roi)})</b></span>
+        <span>Формула: Баланс + Выводы − Все пополнения</span>
+      </div>
+    </div>
+
+    <div class="card sw-card sw-c3">
+      <div class="sw-clb">🚀 СКОРОСТЬ ОКУПАЕМОСТИ И ROI</div>
+      <div class="sw-big {cls(monthly_roi)}">{fmt_pct(monthly_roi)} <small>/ мес</small></div>
+      <div class="sw-cmeta">
+        <span>Средний темп прибыли: <b class="{cls(avg_daily_profit)}">{fmt_money(avg_daily_profit, cur)} / день</b></span>
+        <span>Дней работы Роя (с 14.10): <b>{swarm_days} дн.</b></span>
+      </div>
     </div>
   </div>
-  <div class="fp-body">
-    <div class="fp-grid">
-      <div class="fp-box">
-        <div class="fp-lb">1. Всего вложено (Инвест)</div>
-        <div class="fp-v">{fmt_money(dep, cur)}</div>
-        <div class="fp-sub">Сумма всех пополнений ({len(cs)} активн. счетов)</div>
-      </div>
-      <div class="fp-box">
-        <div class="fp-lb">2. Выведено (Кэшаут)</div>
-        <div class="fp-v pos">{fmt_money(wd, cur)}</div>
-        <div class="fp-sub">Окупаемость вложений: <b>{payback_pct:.1f}%</b></div>
-        <div class="fp-bar"><i style="width:{min(100.0, max(0.0, payback_pct)):.1f}%"></i></div>
-      </div>
-      <div class="fp-box">
-        <div class="fp-lb">3. Свои деньги в риске</div>
-        <div class="fp-v {risk_cls}">{risk_val}</div>
-        <div class="fp-sub">{risk_sub}</div>
-      </div>
-      <div class="fp-box">
-        <div class="fp-lb">4. Сейчас на счетах (Эквити)</div>
-        <div class="fp-v">{fmt_money(eq, cur)}</div>
-        <div class="fp-sub">Баланс: <b>{fmt_money(bal, cur)}</b> · Просадка: <b class="{dd_cls}">{dd_pct:.2f}% ({fmt_money(dd_val, cur)})</b></div>
-      </div>
-      <div class="fp-box">
-        <div class="fp-lb">5. Чистая прибыль (без пополнений)</div>
-        <div class="fp-v {cls(net_bal)}">{fmt_money(net_bal, cur)} <small>({fmt_pct(roi_bal)})</small></div>
-        <div class="fp-sub">По эквити сейчас: <b class="{cls(net_eq)}">{fmt_money(net_eq, cur)} ({fmt_pct(roi_eq)})</b></div>
-      </div>
-      <div class="fp-box">
-        <div class="fp-lb">6. КПД и темп на весь капитал</div>
-        <div class="fp-v {cls(mon_v)}">{fmt_money(mon_v, cur)} <small>({fmt_pct(mon_pct)} / мес)</small></div>
-        <div class="fp-sub">Сегодня: <b class="{cls(day_v)}">{fmt_money(day_v, cur)} ({fmt_pct(day_pct)})</b> · В сделках: <b>{mg_load:.1f}%</b></div>
-      </div>
+
+  <!-- ШКАЛА И КАЛЬКУЛЯТОР БЕЗУБЫТКА -->
+  <div class="card sw-be">
+    <div class="sw-be-top">
+      <div class="sw-be-title">🎯 КАЛЬКУЛЯТОР БЕЗУБЫТКА (ВОЗВРАТ ТЕЛА ИНВЕСТИЦИЙ)</div>
+      <div class="sw-be-pct">Окуплено кэшем: <b>{payback_pct:.1f}%</b></div>
     </div>
+    <div class="sw-be-nums">
+      <div><span>Вложено своих денег:</span> <b>{fmt_money(dep, cur)}</b></div>
+      <div><span>Уже выведено в карман:</span> <b class="pos">{fmt_money(wd, cur)}</b></div>
+      <div><span>Осталось вывести до 100% безубытка:</span> <b class="yel">{fmt_money(left_to_be, cur)}</b></div>
+    </div>
+    <div class="sw-pbar"><div class="sw-pfill" style="width:{bar_w:.1f}%"></div></div>
+    <div class="sw-be-forecast">{be_forecast}</div>
+  </div>
+
+  <!-- БЛОК 2: СВОДНАЯ ТАБЛИЦА МАТРИЦА РОЯ -->
+  <div class="card sw-tcard">
+    <div class="sw-thdr">📊 МАТРИЦА РОЯ (ПО КАЖДОМУ СЧЁТУ)</div>
+    <div class="sw-tscroll">
+      <table class="sw-tbl">
+        <thead>
+          <tr>
+            <th>Счёт / Валютная пара</th>
+            <th>Баланс / Эквити</th>
+            <th>Вложено (Старт + Доливы)</th>
+            <th>Снято / Перелито</th>
+            <th>Чистая прибыль</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows_html}
+        </tbody>
+        <tfoot>
+          <tr>
+            <td><b>ВСЕГО ПО РОЮ ({len(swarm)})</b></td>
+            <td><b>{fmt_money(bal, cur)}</b><div class="sw-sub">Эквити: {fmt_money(eq, cur)}</div></td>
+            <td><b>{fmt_money(dep, cur)}</b></td>
+            <td><b class="pos">{fmt_money(wd, cur)}</b></td>
+            <td><b class="{cls(net_profit)}">{fmt_money(net_profit, cur)} ({fmt_pct(net_roi)})</b></td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+    {excl_note}
   </div>
 </div>'''
 
@@ -502,7 +591,7 @@ def pro_card(c, drag=False):
 </div>'''
 
 
-def pro_view(cs, cur):
+def pro_view(cs):
     by = {str(c["login"]): c for c in cs}
     groups = get_groups()
     gmap = {}
@@ -530,7 +619,7 @@ def pro_view(cs, cur):
             f'<span class="gb"><button class="gx gswap" data-gid="{gid}" title="Поменять местами">⇄</button>'
             f'<button class="gx gdel" data-gid="{gid}" title="Разгруппировать">✕</button></span></div>'
             f'<div class="gcards">{"".join(pro_card(m) for m in members)}</div></div>')
-    return f'{fund_panel_html(cs, cur)}<div class="grid">{"".join(parts)}</div>'
+    return f'<div class="grid">{"".join(parts)}</div>'
 
 
 def simple_card(c):
@@ -652,18 +741,20 @@ def render_body(view, cur):
         return '<div class="empty">Ожидание данных от MT5… (POST /api/update)</div>'
     cs = [calc(login, info, cur) for login, info in list(accounts_data.items())]
     cs.sort(key=login_sort_key)
+    if view == "swarm":
+        return swarm_view(cs, cur)
     if view == "income":
-        return (f'{fund_panel_html(cs, cur)}'
-                f'<div class="grid">{total_card(cs, cur)}</div>'
+        return (f'<div class="grid">{total_card(cs, cur)}</div>'
                 f'<div class="grid inc">{"".join(income_card(c) for c in cs)}</div>')
     if view == "simple":
         return f'<div class="grid sg">{"".join(simple_card(c) for c in cs)}</div>'
     if view == "summary":
         return f'<div class="grid sgrid">{summary_html(cs, cur)}</div>'
-    return pro_view(cs, cur)
+    return pro_view(cs)
 
 
-VIEWS = {"pro": "pro", "income": "income", "inc": "income", "доходы": "income",
+VIEWS = {"pro": "pro", "swarm": "swarm", "рой": "swarm",
+         "income": "income", "inc": "income", "доходы": "income",
          "simple": "simple", "простой": "simple",
          "summary": "summary", "svodka": "summary", "сводка": "summary"}
 
@@ -743,13 +834,16 @@ async def set_settings(request: Request):
         if ADMIN_PASS and str(data.get("pass", "")) != ADMIN_PASS:
             return JSONResponse({"status": "error", "detail": "bad pass"}, status_code=403)
         login = str(data.get("login", "")).strip()
-        if not login or (login.startswith("_") and login not in ("_page", "_fund")):
+        if not login or (login.startswith("_") and login != "_page"):
             return {"status": "error"}
         s = {}
         for key in ("name", "since"):
             v = str(data.get(key) or "").strip()
             if v:
                 s[key] = v[:60]
+        sw = str(data.get("swarm") or "").strip()
+        if sw in ("1", "0"):
+            s["swarm"] = sw
         for key in ("deposits", "withdrawals"):
             v = str(data.get(key) if data.get(key) is not None else "").strip()
             v = v.replace(",", ".").replace(" ", "").replace("$", "")
@@ -837,7 +931,7 @@ def debug():
             text = f"OK: {v}" if v is not None else "НЕТ ДАННЫХ"
             out.append(f"<tr><td>{escape(title)}</td><td style='color:{color}'>{text}</td></tr>")
         pairs = info.get("pairs")
-        pc = len(pairs) if isinstance(pairs) else 0
+        pc = len(pairs) if isinstance(pairs, dict) else 0
         color = "#1a9c55" if pc else "#d01040"
         out.append(f"<tr><td>pairs (пары)</td><td style='color:{color}'>{pc} шт.</td></tr></table>")
         out.append(f"<p style='color:#555'>Все поля в пакете: {escape(', '.join(map(str, info.keys())))}</p>")
@@ -871,16 +965,16 @@ PAGE = r"""<!doctype html>
   --bg1:#e2eaf2;--bg2:#d5dfea;--card:#fff;--cardbd:transparent;--tx:#2b2f36;--st:#222;--mu:#888;--mu2:#999;
   --ln:#eef0f3;--ln2:#d5dbe4;--inp:#fff;--inpbd:#c5cedd;--ddbg:#fff;--hov:#eef2fb;--sh:rgba(40,60,90,.25);
   --th:#1f2328;--ago:#5fd39a;--totbg:linear-gradient(180deg,#adc3f3 0%,#dde8f8 45%,#d9f6e8 100%);
-  --gbd:rgba(63,124,240,.22);--fpbox:#f5f8fc;--fpbd:#e1e8f2}
+  --gbd:rgba(63,124,240,.22);--swbox:#f4f8ff;--swbd:#d4e2f7}
 html.dark{--green:#34d986;--red:#ff4d70;--yellow:#f5b800;--blue:#7b95ff;--blue2:#3db8ff;
   --bg1:#070d1a;--bg2:#0f1a30;--card:#141d2f;--cardbd:#23324d;--tx:#d6deec;--st:#f0f4fb;--mu:#8793a8;--mu2:#7c889d;
   --ln:#1f2b42;--ln2:#26344d;--inp:#0e1626;--inpbd:#2c3c5a;--ddbg:#16213a;--hov:#1d2b49;--sh:rgba(0,0,0,.5);
   --th:#0a111f;--ago:#4fd69a;--totbg:linear-gradient(180deg,#25365f 0%,#18233c 55%,#143229 100%);
-  --gbd:rgba(123,149,255,.25);--fpbox:#0e1626;--fpbd:#22314e}
+  --gbd:rgba(123,149,255,.25);--swbox:#0c1424;--swbd:#223454}
 *{box-sizing:border-box}
 html{background:var(--bg2)}
 body{margin:0;font:13px/1.35 "Open Sans","Segoe UI",Roboto,Arial,sans-serif;color:var(--tx);
-  background:linear-gradient(135deg,var(--bg1),var(--bg2));min-height:100vh}
+  background:linear-gradient(135deg,var(--bg1),var(--bg2));min-height:100vh;overflow-x:hidden}
 .wrap{padding:8px 8px 70px}
 .hero{position:relative;border-radius:10px;padding:12px 16px 14px;min-height:124px;box-shadow:0 4px 18px rgba(8,20,60,.35)}
 .hero-bg{position:absolute;inset:0;border-radius:10px;overflow:hidden;
@@ -917,8 +1011,10 @@ html.dark .i-moon{display:none}
 .ddbtn{background:#1d3a78;color:#fff;border:1px solid rgba(0,229,255,.5);border-radius:3px;padding:8px 14px;font-weight:600;cursor:pointer;font-size:13px;font-family:inherit;box-shadow:0 0 10px rgba(0,229,255,.28)}
 .ddbtn:after{content:"";display:inline-block;margin-left:8px;border:4px solid transparent;border-top-color:#fff;vertical-align:-2px}
 .ddbtn.plain:after{display:none}
+.ddbtn.swbtn{background:linear-gradient(90deg,#0d2b5e,#134e6f);border-color:#00e5ff}
+.ddbtn.swbtn.on{background:linear-gradient(90deg,#00c6ff,#0072ff);color:#fff;border-color:#fff;box-shadow:0 0 14px rgba(0,229,255,.6)}
 body.gm #gm{background:#2ecc71;color:#06260f;border-color:#2ecc71}
-.ddm{display:none;position:absolute;top:38px;left:0;background:var(--ddbg);border-radius:3px;box-shadow:0 3px 12px rgba(0,0,0,.35);z-index:9;min-width:160px}
+.ddm{display:none;position:absolute;top:38px;left:0;background:var(--ddbg);border-radius:3px;box-shadow:0 3px 12px rgba(0,0,0,.35);z-index:9;min-width:170px}
 .ddm.open{display:block}
 .ddm a{display:block;padding:8px 14px;color:var(--tx);cursor:pointer}
 .ddm a:hover{background:var(--hov)}
@@ -970,28 +1066,52 @@ body.gm #gm{background:#2ecc71;color:#06260f;border-color:#2ecc71}
 .foot{display:flex;justify-content:space-between;margin-top:auto;padding-top:8px;font-size:9.5px}
 .foot .br{color:var(--mu2)}
 .ag{color:var(--ago)}.ag.stale{color:var(--red)}
-/* панель эффективности капитала фонда */
-.fp{margin-top:12px;padding:10px 14px;border-left:3px solid #00e5ff}
-.fp-top{display:flex;justify-content:space-between;align-items:center;gap:10px;cursor:pointer;flex-wrap:wrap}
-.fp-ttl{display:flex;align-items:center;gap:7px;font-size:13.5px;color:var(--st)}
-.fp-sush{background:#f6b90f;color:#111;font-weight:700;font-size:11px;padding:1px 7px;border-radius:10px}
-.fp-brief{display:flex;align-items:center;gap:14px;flex-wrap:wrap;font-size:12.5px;color:var(--mu)}
-.fp-brief b{color:var(--st)}
-.fp-ed{border:1px solid var(--ln2);background:var(--fpbox);color:var(--tx);border-radius:4px;cursor:pointer;padding:2px 7px;font-size:12px}
-.fp-ed:hover{background:var(--hov)}
-.fp-arr{font-size:11px;color:var(--mu);transition:transform .2s}
-.fp.closed .fp-body{display:none}
-.fp.closed .fp-arr{transform:rotate(-90deg)}
-.fp-body{margin-top:10px;padding-top:10px;border-top:1px solid var(--ln)}
-.fp-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:8px}
-.fp-box{background:var(--fpbox);border:1px solid var(--fpbd);border-radius:5px;padding:8px 11px}
-.fp-lb{font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:.3px}
-.fp-v{font-size:19px;font-weight:700;color:var(--st);margin-top:2px;line-height:1.2}
-.fp-v small{font-size:13px;font-weight:600}
-.fp-sub{font-size:11px;color:var(--mu);margin-top:3px}
-.fp-sub b{color:var(--tx)}
-.fp-bar{height:5px;background:var(--ln2);border-radius:3px;overflow:hidden;margin-top:5px}
-.fp-bar i{display:block;height:100%;background:linear-gradient(90deg,#28c76f,#00e5ff)}
+/* ---------------- ФИНАНСОВАЯ МАТРИЦА РОЯ ---------------- */
+.sw-wrap{margin-top:12px;display:flex;flex-direction:column;gap:12px}
+.sw-hdr{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;
+  background:linear-gradient(120deg,#06112b,#0b234d);color:#fff;padding:12px 16px;border-radius:8px;
+  border:1px solid rgba(0,229,255,.35);box-shadow:0 4px 16px rgba(0,0,0,.3)}
+.sw-title{font-size:16px;font-weight:700;letter-spacing:.4px;color:#fff;text-shadow:0 0 10px rgba(0,229,255,.5)}
+.sw-subtitle{font-size:11.5px;color:#a8c4ea;margin-top:2px}
+.sw-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:12px}
+.sw-card{padding:14px 16px;border-radius:8px;border-top:3px solid #00e5ff}
+.sw-c1{border-top-color:#00e5ff}
+.sw-c2{border-top-color:#28c76f}
+.sw-c3{border-top-color:#7b95ff}
+.sw-clb{font-size:11px;font-weight:700;color:var(--mu);letter-spacing:.4px;text-transform:uppercase}
+.sw-big{font-size:26px;font-weight:700;color:var(--st);margin:6px 0 8px;line-height:1.15}
+.sw-big small{font-size:16px;font-weight:600}
+.sw-cmeta{display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--mu);border-top:1px solid var(--ln);padding-top:7px}
+.sw-cmeta b{color:var(--st)}
+/* шкала безубытка */
+.sw-be{padding:14px 16px;border-radius:8px;border-left:4px solid #28c76f}
+.sw-be-top{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
+.sw-be-title{font-weight:700;font-size:13px;color:var(--st);letter-spacing:.3px}
+.sw-be-pct{font-size:14px;color:var(--tx)}
+.sw-be-pct b{color:var(--green);font-size:16px}
+.sw-be-nums{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr));gap:8px;margin:10px 0;
+  background:var(--swbox);border:1px solid var(--swbd);border-radius:6px;padding:10px 12px;font-size:12.5px}
+.sw-be-nums span{color:var(--mu);display:block;font-size:11px}
+.sw-be-nums b{font-size:16px;color:var(--st)}
+.sw-pbar{height:12px;background:var(--ln2);border-radius:6px;overflow:hidden;box-shadow:inset 0 1px 3px rgba(0,0,0,.25)}
+.sw-pfill{height:100%;background:linear-gradient(90deg,#28c76f,#00e5ff);border-radius:6px;box-shadow:0 0 10px rgba(0,229,255,.6);transition:width .4s}
+.sw-be-forecast{margin-top:8px;font-size:12.5px;color:var(--tx)}
+/* таблица Матрица Роя */
+.sw-tcard{padding:0;border-radius:8px;overflow:hidden}
+.sw-thdr{padding:12px 16px;font-weight:700;font-size:13.5px;color:var(--st);border-bottom:1px solid var(--ln)}
+.sw-tscroll{overflow-x:auto}
+.sw-tbl{width:100%;border-collapse:collapse;min-width:580px}
+.sw-tbl th{background:var(--th);color:#fff;font-weight:600;font-size:12px;text-align:right;padding:10px 12px;white-space:nowrap}
+.sw-tbl th:first-child{text-align:left;padding-left:16px}
+.sw-tbl td{padding:10px 12px;text-align:right;border-bottom:1px solid var(--ln);vertical-align:middle}
+.sw-tbl td:first-child{text-align:left;padding-left:16px}
+.sw-tbl tfoot td{background:var(--swbox);border-top:2px solid var(--ln2);border-bottom:0;padding:11px 12px;font-size:13.5px}
+.sw-tbl tfoot td:first-child{padding-left:16px}
+.sw-nm{display:flex;align-items:center;gap:4px}
+.sw-ed{display:inline-block;margin-left:6px;font-size:12px}
+.sw-m{font-weight:700;font-size:14px;color:var(--st);white-space:nowrap}
+.sw-sub{font-size:11px;color:var(--mu);margin-top:2px;white-space:nowrap}
+.sw-foot{padding:9px 16px;font-size:11px;color:var(--mu);border-top:1px solid var(--ln)}
 /* простой: компактная строка */
 .sc{flex-direction:row;align-items:center;gap:10px;padding:6px 22px 6px 12px;min-height:48px}
 .sc .c1{flex:1;min-width:0}
@@ -1069,7 +1189,7 @@ body.gm .gbox .card{opacity:.55}
 .mbox{background:var(--card);color:var(--tx);border:1px solid var(--cardbd);border-radius:4px;padding:18px 20px;width:min(92vw,360px);box-shadow:0 8px 30px rgba(0,0,0,.35)}
 .mbox h3{margin:0 0 6px;font-size:15px;color:var(--st)}
 .mbox label{display:block;color:var(--mu);font-size:12px;margin-top:9px}
-.mbox input{width:100%;padding:7px 9px;border:1px solid var(--inpbd);background:var(--inp);color:var(--st);border-radius:3px;font-size:14px;margin-top:3px;font-family:inherit}
+.mbox input,.mbox select{width:100%;padding:7px 9px;border:1px solid var(--inpbd);background:var(--inp);color:var(--st);border-radius:3px;font-size:14px;margin-top:3px;font-family:inherit}
 .mbtn{display:flex;gap:8px;margin-top:14px}
 .mbtn button{flex:1;padding:9px;border:0;border-radius:3px;cursor:pointer;font-weight:600;font-family:inherit}
 #m_save{background:#1d3a78;color:#fff}#m_cancel{background:var(--hov);color:var(--tx)}
@@ -1102,8 +1222,6 @@ body.gm .gbox .card{opacity:.55}
   .wrap{padding:6px 6px 70px}
   .grid{gap:8px;margin-top:8px}
   .grid.inc{margin-top:8px}
-  .fp{margin-top:8px;padding:8px 10px}
-  .fp-brief{gap:8px;font-size:11.5px}
   .card{padding:9px 12px 6px}
   .tot{padding:8px 12px 6px}
   .ic{padding:8px 12px 5px}
@@ -1111,6 +1229,7 @@ body.gm .gbox .card{opacity:.55}
   .tiles{margin-top:6px}
   .foot{padding-top:6px}
   .logo{right:auto;left:50%;transform:translate(-50%,-50%);height:135%}
+  .sw-big{font-size:22px}
 }
 @media(max-width:560px){
   h1{font-size:20px}
@@ -1122,8 +1241,9 @@ body.gm .gbox .card{opacity:.55}
     <div class="hl">
       <h1><svg viewBox="0 0 24 24"><path d="M12 12a5 5 0 1 0 0-10 5 5 0 0 0 0 10zm0 2c-4 0-8 2-8 5v3h16v-3c0-3-4-5-8-5z"/></svg><span id="ttl" title="Нажмите, чтобы переименовать">__TITLE__</span></h1>
       <div class="dd"><button class="ddbtn" id="ddb">Расширенный</button>
+        <button class="ddbtn plain swbtn" id="swb" title="Свайп влево/вправо или нажмите для открытия Матрицы Роя">🐝 Матрица Роя</button>
         <button class="ddbtn plain" id="gm" title="Объединить два счёта рядом">Группы</button>
-        <div class="ddm" id="ddm"><a data-v="pro">Расширенный</a><a data-v="income">Доходы</a><a data-v="simple">Простой</a><a data-v="summary">Сводка</a></div></div>
+        <div class="ddm" id="ddm"><a data-v="pro">Расширенный</a><a data-v="swarm">🐝 Матрица Роя</a><a data-v="income">Доходы</a><a data-v="simple">Простой</a><a data-v="summary">Сводка</a></div></div>
     </div>
     <div class="hr">
       <button class="btn b-g" id="rf" title="Обновить"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7M21 3v6h-6"/></svg></button>
@@ -1145,21 +1265,30 @@ body.gm .gbox .card{opacity:.55}
 <div id="gbar"><span id="gtx">Выберите 2 счёта (0/2)</span><button id="gok" disabled>Объединить</button><button id="gend">Готово</button></div>
 <div class="mdl" id="mdl"><div class="mbox">
   <h3>Настройки счёта <span id="mlog"></span></h3>
-  <label id="l_name">Название<input id="f_name"></label>
-  <label id="l_since">Работает с (дд.мм.гггг)<input id="f_since"></label>
-  <label id="l_dep">Пополнения, $ (в долларах)<input id="f_dep" inputmode="decimal"></label>
-  <label id="l_wd">Снятия, $ (в долларах)<input id="f_wd" inputmode="decimal"></label>
+  <label>Название<input id="f_name"></label>
+  <label>Работает с (дд.мм.гггг)<input id="f_since"></label>
+  <label>Пополнения, $ (в долларах)<input id="f_dep" inputmode="decimal"></label>
+  <label>Снятия, $ (в долларах)<input id="f_wd" inputmode="decimal"></label>
+  <label>Учитывать в «Матрице Роя»
+    <select id="f_sw">
+      <option value="">Авто (счета Роя с 14.10)</option>
+      <option value="1">Да — включить в Рой</option>
+      <option value="0">Нет — исключить (старый счёт)</option>
+    </select>
+  </label>
   <div class="mbtn"><button id="m_save">Сохранить</button><button id="m_cancel">Отмена</button></div>
-  <div class="mhint" id="m_hint">Пустое поле = брать данные от робота автоматически</div>
+  <div class="mhint">Пустое поле = брать данные от робота автоматически</div>
 </div></div>
 <script>
 let VIEW="__VIEW__", CUR="__CUR__", EDIT=null, RATE=null, GM=false, SEL=[], DRAG=null;
-const NAMES={pro:'Расширенный',income:'Доходы',simple:'Простой',summary:'Сводка'};
+const NAMES={pro:'Расширенный',swarm:'🐝 Матрица Роя',income:'Доходы',simple:'Простой',summary:'Сводка'};
 const q=new URLSearchParams(location.search);
 const OKC=['ORIG','USD','RUB'];
 if(!q.get('cur')){const s=localStorage.getItem('fxcur');if(OKC.includes(s))CUR=s;}
 const CURS=[['ORIG','<svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18"/></svg>'],['USD','$'],['RUB','₽']];
 const $=id=>document.getElementById(id);
+
+function setView(v){VIEW=v;sync();load();}
 
 /* ---- тема ---- */
 $('th').onclick=()=>{
@@ -1168,13 +1297,25 @@ $('th').onclick=()=>{
   try{localStorage.setItem('fxtheme',d?'dark':'light');}catch(e){}
 };
 
-/* ---- сворачивание панели капитала фонда ---- */
-function applyFundState(){
-  const fp=$('fpanel');
-  if(!fp)return;
-  const closed=localStorage.getItem('fxfp_closed')==='1';
-  fp.classList.toggle('closed',closed);
-}
+/* ---- свайп влево/вправо на телефоне между Расширенным и Матрицей Роя ---- */
+let sx=0, sy=0;
+document.addEventListener('touchstart',e=>{
+  if(!e.touches||e.touches.length!==1)return;
+  sx=e.touches[0].clientX;sy=e.touches[0].clientY;
+},{passive:true});
+document.addEventListener('touchend',e=>{
+  if(!sx||GM||DRAG||$('mdl').classList.contains('open'))return;
+  if(e.target&&e.target.closest&&e.target.closest('.sw-tscroll'))return;
+  const dx=(e.changedTouches[0].clientX)-sx;
+  const dy=(e.changedTouches[0].clientY)-sy;
+  sx=0;sy=0;
+  if(Math.abs(dx)>85 && Math.abs(dx)>Math.abs(dy)*1.8){
+    if(dx<0 && VIEW!=='swarm') setView('swarm');
+    else if(dx>0 && VIEW==='swarm') setView('pro');
+  }
+},{passive:true});
+
+$('swb').onclick=()=>{setView(VIEW==='swarm'?'pro':'swarm');};
 
 /* ---- валюта ---- */
 function drawCur(){
@@ -1189,6 +1330,7 @@ function showRate(){
 async function loadRate(){try{RATE=await (await fetch('/api/rates',{cache:'no-store'})).json();showRate();}catch(e){}}
 function sync(){
   $('ddb').textContent=NAMES[VIEW]||NAMES.pro;
+  $('swb').classList.toggle('on',VIEW==='swarm');
   $('gm').style.display=VIEW==='pro'?'':'none';
   if(VIEW!=='pro'&&GM){GM=false;SEL=[];applySel();}
   const u=new URL(location);u.searchParams.set('view',VIEW);u.searchParams.set('cur',CUR);history.replaceState(null,'',u);
@@ -1206,7 +1348,7 @@ async function load(){
   if(DRAG)return;
   $('rf').classList.add('spin');setTimeout(()=>$('rf').classList.remove('spin'),800);
   try{const r=await fetch('/fragment?view='+VIEW+'&cur='+CUR,{cache:'no-store'});
-    if(r.ok){const t=await r.text();if(!DRAG){$('app').innerHTML=t;stamp();applySel();applyFundState();}}}catch(e){}
+    if(r.ok){const t=await r.text();if(!DRAG){$('app').innerHTML=t;stamp();applySel();}}}catch(e){}
 }
 
 /* ---- запросы с паролем ---- */
@@ -1231,52 +1373,25 @@ $('ttl').onclick=async()=>{
   }else alert('Не удалось сохранить');
 };
 
-/* ---- настройки счёта и поправки фонда ---- */
+/* ---- настройки счёта ---- */
 document.addEventListener('click',e=>{
-  const fped=e.target.closest('#fped');
-  if(fped){
-    e.stopPropagation();
-    const fp=$('fpanel');
-    EDIT='_fund';
-    $('mlog').textContent='(Поправки по закрытым/слитым счетам)';
-    $('l_name').style.display='none';
-    $('l_since').style.display='none';
-    $('f_name').value='';$('f_since').value='';
-    $('f_dep').value=(fp&&fp.dataset.fd)||'';$('f_dep').placeholder='0 (доп. вложено в закрытые счета, $)';
-    $('f_wd').value=(fp&&fp.dataset.fw)||'';$('f_wd').placeholder='0 (доп. выведено с закрытых счетов, $)';
-    $('m_hint').textContent='Если какой-то старый счёт был закрыт или слит и удалён с мониторинга, укажите здесь его пополнения/снятия, чтобы общий отчёт фонда был точным.';
-    $('mdl').classList.add('open');$('f_dep').focus();
-    return;
-  }
-  const fptog=e.target.closest('#fptog');
-  if(fptog){
-    const fp=$('fpanel');
-    if(fp){
-      const cl=!fp.classList.contains('closed');
-      fp.classList.toggle('closed',cl);
-      try{localStorage.setItem('fxfp_closed',cl?'1':'0');}catch(_){}
-    }
-    return;
-  }
   const t=e.target.closest('.ed');if(!t)return;
   const c=t.closest('[data-login]');if(!c)return;
   const d=c.dataset;EDIT=d.login;
   $('mlog').textContent='#'+EDIT;
-  $('l_name').style.display='';
-  $('l_since').style.display='';
   $('f_name').value=d.n||'';$('f_name').placeholder=d.na||'';
-  $('f_since').value=d.s||'';$('f_since').placeholder=d.sa||'например 15.11.2024';
+  $('f_since').value=d.s||'';$('f_since').placeholder=d.sa||'например 14.10.2026';
   $('f_dep').value=d.d||'';$('f_dep').placeholder=d.da?('авто: '+d.da):'не задано';
   $('f_wd').value=d.w||'';$('f_wd').placeholder=d.wa?('авто: '+d.wa):'не задано';
-  $('m_hint').textContent='Пустое поле = брать данные от робота автоматически';
+  $('f_sw').value=d.sw||'';
   $('mdl').classList.add('open');$('f_name').focus();
 });
 $('m_cancel').onclick=()=>$('mdl').classList.remove('open');
 $('mdl').addEventListener('click',e=>{if(e.target===$('mdl'))$('mdl').classList.remove('open');});
 $('m_save').onclick=async()=>{
-  const p={login:EDIT,name:$('f_name').value,since:$('f_since').value,deposits:$('f_dep').value,withdrawals:$('f_wd').value};
+  const p={login:EDIT,name:$('f_name').value,since:$('f_since').value,deposits:$('f_dep').value,withdrawals:$('f_wd').value,swarm:$('f_sw').value};
   if(await saveSettings(Object.assign({},p))){
-    if(p.name||p.since||p.deposits||p.withdrawals)localStorage.setItem('fxset_'+EDIT,JSON.stringify(p));
+    if(p.name||p.since||p.deposits||p.withdrawals||p.swarm)localStorage.setItem('fxset_'+EDIT,JSON.stringify(p));
     else localStorage.removeItem('fxset_'+EDIT);
     $('mdl').classList.remove('open');load();
   }else alert('Не удалось сохранить');
@@ -1377,7 +1492,7 @@ $('ddb').onclick=e=>{e.stopPropagation();$('ddm').classList.toggle('open');};
 document.querySelectorAll('#ddm a').forEach(a=>a.onclick=()=>{VIEW=a.dataset.v;sync();load();});
 document.addEventListener('click',()=>$('ddm').classList.remove('open'));
 $('rf').onclick=load;
-drawCur();sync();applySel();applyFundState();stamp();loadRate();restore();restoreGroups();
+drawCur();sync();applySel();stamp();loadRate();restore();restoreGroups();
 setInterval(tick,1000);setInterval(load,3000);setInterval(loadRate,600000);
 if(CUR!=='__CUR__')load();
 </script></body></html>"""
