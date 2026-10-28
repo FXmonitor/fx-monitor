@@ -1,4 +1,4 @@
-"""GTrade monitor (Расширенный / Матрица Роя / Доходы / Простой / Сводка + группы + ночная тема). Диагностика: /debug"""
+"""GTrade monitor (Расширенный / Финансовая Матрица Роя / Таблица Роя / Доходы / Простой / Сводка). Диагностика: /debug"""
 import os
 import sys
 import json
@@ -165,6 +165,18 @@ def fmt_money(v, cur):
     return f"{SYMS.get(cur, '$')} {v:,.2f}"
 
 
+def fmt_money_compact(v, cur):
+    """Компактный формат денег для мобильной таблицы (без .00 на целых суммах)."""
+    if v is None:
+        return "—"
+    if abs(v) < 0.005:
+        v = 0.0
+    sym = SYMS.get(cur, "$")
+    if abs(v - round(v)) < 0.005:
+        return f"{sym}{int(round(v)):,}"
+    return f"{sym}{v:,.2f}"
+
+
 def fmt_pct(v, plus=True, zero="0%"):
     if v is None:
         return "—"
@@ -224,7 +236,6 @@ def is_swarm_account(login, name, since_dt, swarm_flag):
     if any(old_w in up_name for old_w in ("CLASSIC", "KRYSTAL", "KING")):
         return False
     if since_dt is not None:
-        # Если указана дата старта: берём счета от 14 октября (года старта) и новее
         cutoff = datetime(since_dt.year, 10, 14)
         return since_dt >= cutoff
     if any(k in up_name for k in SWARM_KEYS):
@@ -394,14 +405,12 @@ def margin_view(c):
     return f"{c['lvl']:.0f}%", ("pos" if c["lvl"] >= 100 else "neg")
 
 
-# ---------------------------------------------------------------- ФИНАНСОВАЯ МАТРИЦА РОЯ (свайп-экран)
+# ---------------------------------------------------------------- 1-Й СВАЙП: ФИНАНСОВАЯ МАТРИЦА РОЯ
 def swarm_view(cs, cur):
     swarm = [c for c in cs if c["in_swarm"]]
-    excluded = [c for c in cs if not c["in_swarm"]]
 
     bal = sum(c["bal"] for c in swarm)
     eq = sum(c["eq"] for c in swarm)
-    # Если по какому-то счёту история пополнений ещё не пришла (0), берём баланс как стартовый вклад
     dep = sum(c["dep"] if c["dep"] > 0 else c["bal"] for c in swarm)
     wd = sum(c["wd"] for c in swarm)
 
@@ -421,7 +430,6 @@ def swarm_view(cs, cur):
     left_to_be = max(0.0, dep - wd)
     bar_w = min(100.0, max(0.0, payback_pct))
 
-    # Дней работы Роя с 14.10 (или максимум из счетов Роя)
     now_dt = now_local()
     swarm_start = datetime(now_dt.year if now_dt.month >= 10 else now_dt.year - 1, 10, 14)
     swarm_days = max(1, (now_dt - swarm_start).days)
@@ -437,51 +445,15 @@ def swarm_view(cs, cur):
     else:
         be_forecast = "⏳ Накапливаем статистику закрытых сделок для расчёта точного темпа окупаемости"
 
-    # Строки таблицы по каждому счёту Роя
-    rows_html = ""
-    for c in swarm:
-        c_dep = c["dep"] if c["dep"] > 0 else c["bal"]
-        c_wd = c["wd"]
-        c_net = (c["bal"] + c_wd) - c_dep
-        c_roi = (c_net / c_dep * 100.0) if c_dep > 0 else 0.0
-        c_ddcls = {"g": "pos", "y": "yel", "r": "neg"}[dd_tone(c["ddp"])]
-        pair_tags = " · ".join(s["name"] for s in c["syms"]) if c["syms"] else "Ожидание сделок"
-
-        rows_html += f'''<tr {attrs(c)}>
-  <td>
-    <div class="sw-nm">{head_html(c)} <span class="mi ed sw-ed" title="Настройки счёта">☰</span></div>
-    <div class="sw-sub">{escape(pair_tags)}</div>
-  </td>
-  <td>
-    <div class="sw-m">{fmt_money(c["bal"], cur)}</div>
-    <div class="sw-sub">Эквити: <b>{fmt_money(c["eq"], cur)}</b> (<span class="{c_ddcls}">{c["ddp"]:.2f}%</span>)</div>
-  </td>
-  <td><div class="sw-m">{fmt_money(c_dep, cur)}</div></td>
-  <td><div class="sw-m pos">{fmt_money(c_wd, cur)}</div></td>
-  <td>
-    <div class="sw-m {cls(c_net)}">{fmt_money(c_net, cur)}</div>
-    <div class="sw-sub {cls(c_roi)}">{fmt_pct(c_roi)}</div>
-  </td>
-</tr>'''
-
-    if not rows_html:
-        rows_html = '<tr><td colspan="5" style="text-align:center;padding:18px;color:var(--mu)">Нет активных счетов Роя. Включите нужные счета через ☰ → «В Матрице Роя: Да».</td></tr>'
-
-    excl_note = ""
-    if excluded:
-        names_ex = ", ".join(escape(x["name"]) for x in excluded)
-        excl_note = f'<div class="sw-foot">Старые счета вне Матрицы Роя ({len(excluded)} шт., до 14.10): {names_ex}. Изменить состав можно через ☰ на любом счёте.</div>'
-
     return f'''<div class="sw-wrap">
   <div class="sw-hdr">
     <div>
       <div class="sw-title">🐝 ФИНАНСОВАЯ МАТРИЦА «РОЯ СЧЕТОВ»</div>
-      <div class="sw-subtitle">Отчётность с 14.10 · Активных счетов в Рое: <b>{len(swarm)}</b> · Свайп вправо → возврат к счетам</div>
+      <div class="sw-subtitle">Отчётность с 14.10 · Активных счетов: <b>{len(swarm)}</b> · Свайп влево → Таблица по счетам</div>
     </div>
-    <button class="ddbtn plain" onclick="setView('pro')">← К счетам</button>
   </div>
 
-  <!-- БЛОК 1: 3 НЕОНОВЫХ ВИДЖЕТА ЗДОРОВЬЯ И ОКУПАЕМОСТИ -->
+  <!-- 3 НЕОНОВЫХ ВИДЖЕТА ЗДОРОВЬЯ И ОКУПАЕМОСТИ -->
   <div class="sw-cards">
     <div class="card sw-card sw-c1">
       <div class="sw-clb">🌊 ОБЩАЯ ПЛАВАЮЩАЯ ПРОСАДКА РОЯ</div>
@@ -525,36 +497,66 @@ def swarm_view(cs, cur):
     <div class="sw-pbar"><div class="sw-pfill" style="width:{bar_w:.1f}%"></div></div>
     <div class="sw-be-forecast">{be_forecast}</div>
   </div>
+</div>'''
 
-  <!-- БЛОК 2: СВОДНАЯ ТАБЛИЦА МАТРИЦА РОЯ -->
+
+# ---------------------------------------------------------------- 2-Й СВАЙП: КОМПАКТНАЯ МАТРИЦА РОЯ ПО КАЖДОМУ СЧЁТУ
+def swarm_table_view(cs, cur):
+    swarm = [c for c in cs if c["in_swarm"]]
+
+    bal = sum(c["bal"] for c in swarm)
+    dep = sum(c["dep"] if c["dep"] > 0 else c["bal"] for c in swarm)
+    wd = sum(c["wd"] for c in swarm)
+    net_profit = (bal + wd) - dep
+    net_roi = (net_profit / dep * 100.0) if dep > 0 else 0.0
+
+    rows_html = ""
+    for c in swarm:
+        c_dep = c["dep"] if c["dep"] > 0 else c["bal"]
+        c_wd = c["wd"]
+        c_net = (c["bal"] + c_wd) - c_dep
+        c_roi = (c_net / c_dep * 100.0) if c_dep > 0 else 0.0
+
+        rows_html += f'''<tr {attrs(c)}>
+  <td><span class="name ed" title="Настройки счёта">{escape(c["name"])}</span></td>
+  <td>{fmt_money_compact(c_dep, cur)}</td>
+  <td class="pos">{fmt_money_compact(c_wd, cur)}</td>
+  <td>
+    <div class="sw-m {cls(c_net)}">{fmt_money_compact(c_net, cur)}</div>
+    <div class="sw-sub {cls(c_roi)}">{fmt_pct(c_roi)}</div>
+  </td>
+</tr>'''
+
+    if not rows_html:
+        rows_html = '<tr><td colspan="4" style="text-align:center;padding:16px;color:var(--mu)">Нет активных счетов Роя.</td></tr>'
+
+    return f'''<div class="sw-wrap">
   <div class="card sw-tcard">
     <div class="sw-thdr">📊 МАТРИЦА РОЯ (ПО КАЖДОМУ СЧЁТУ)</div>
-    <div class="sw-tscroll">
-      <table class="sw-tbl">
-        <thead>
-          <tr>
-            <th>Счёт / Валютная пара</th>
-            <th>Баланс / Эквити</th>
-            <th>Вложено (Старт + Доливы)</th>
-            <th>Снято / Перелито</th>
-            <th>Чистая прибыль</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows_html}
-        </tbody>
-        <tfoot>
-          <tr>
-            <td><b>ВСЕГО ПО РОЮ ({len(swarm)})</b></td>
-            <td><b>{fmt_money(bal, cur)}</b><div class="sw-sub">Эквити: {fmt_money(eq, cur)}</div></td>
-            <td><b>{fmt_money(dep, cur)}</b></td>
-            <td><b class="pos">{fmt_money(wd, cur)}</b></td>
-            <td><b class="{cls(net_profit)}">{fmt_money(net_profit, cur)} ({fmt_pct(net_roi)})</b></td>
-          </tr>
-        </tfoot>
-      </table>
-    </div>
-    {excl_note}
+    <table class="sw-tbl">
+      <thead>
+        <tr>
+          <th>Счёт</th>
+          <th>Вложено</th>
+          <th>Снято</th>
+          <th>Чистая прибыль</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows_html}
+      </tbody>
+      <tfoot>
+        <tr>
+          <td><b>ВСЕГО ({len(swarm)})</b></td>
+          <td><b>{fmt_money_compact(dep, cur)}</b></td>
+          <td><b class="pos">{fmt_money_compact(wd, cur)}</b></td>
+          <td>
+            <b class="{cls(net_profit)}">{fmt_money_compact(net_profit, cur)}</b>
+            <div class="sw-sub {cls(net_roi)}">{fmt_pct(net_roi)}</div>
+          </td>
+        </tr>
+      </tfoot>
+    </table>
   </div>
 </div>'''
 
@@ -743,6 +745,8 @@ def render_body(view, cur):
     cs.sort(key=login_sort_key)
     if view == "swarm":
         return swarm_view(cs, cur)
+    if view == "swarm2":
+        return swarm_table_view(cs, cur)
     if view == "income":
         return (f'<div class="grid">{total_card(cs, cur)}</div>'
                 f'<div class="grid inc">{"".join(income_card(c) for c in cs)}</div>')
@@ -754,6 +758,7 @@ def render_body(view, cur):
 
 
 VIEWS = {"pro": "pro", "swarm": "swarm", "рой": "swarm",
+         "swarm2": "swarm2", "таблица роя": "swarm2",
          "income": "income", "inc": "income", "доходы": "income",
          "simple": "simple", "простой": "simple",
          "summary": "summary", "svodka": "summary", "сводка": "summary"}
@@ -1011,10 +1016,8 @@ html.dark .i-moon{display:none}
 .ddbtn{background:#1d3a78;color:#fff;border:1px solid rgba(0,229,255,.5);border-radius:3px;padding:8px 14px;font-weight:600;cursor:pointer;font-size:13px;font-family:inherit;box-shadow:0 0 10px rgba(0,229,255,.28)}
 .ddbtn:after{content:"";display:inline-block;margin-left:8px;border:4px solid transparent;border-top-color:#fff;vertical-align:-2px}
 .ddbtn.plain:after{display:none}
-.ddbtn.swbtn{background:linear-gradient(90deg,#0d2b5e,#134e6f);border-color:#00e5ff}
-.ddbtn.swbtn.on{background:linear-gradient(90deg,#00c6ff,#0072ff);color:#fff;border-color:#fff;box-shadow:0 0 14px rgba(0,229,255,.6)}
 body.gm #gm{background:#2ecc71;color:#06260f;border-color:#2ecc71}
-.ddm{display:none;position:absolute;top:38px;left:0;background:var(--ddbg);border-radius:3px;box-shadow:0 3px 12px rgba(0,0,0,.35);z-index:9;min-width:170px}
+.ddm{display:none;position:absolute;top:38px;left:0;background:var(--ddbg);border-radius:3px;box-shadow:0 3px 12px rgba(0,0,0,.35);z-index:9;min-width:190px}
 .ddm.open{display:block}
 .ddm a{display:block;padding:8px 14px;color:var(--tx);cursor:pointer}
 .ddm a:hover{background:var(--hov)}
@@ -1066,52 +1069,52 @@ body.gm #gm{background:#2ecc71;color:#06260f;border-color:#2ecc71}
 .foot{display:flex;justify-content:space-between;margin-top:auto;padding-top:8px;font-size:9.5px}
 .foot .br{color:var(--mu2)}
 .ag{color:var(--ago)}.ag.stale{color:var(--red)}
-/* ---------------- ФИНАНСОВАЯ МАТРИЦА РОЯ ---------------- */
-.sw-wrap{margin-top:12px;display:flex;flex-direction:column;gap:12px}
+/* ---------------- ФИНАНСОВАЯ МАТРИЦА РОЯ + ТАБЛИЦА ---------------- */
+.sw-wrap{margin-top:10px;display:flex;flex-direction:column;gap:10px}
 .sw-hdr{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;
-  background:linear-gradient(120deg,#06112b,#0b234d);color:#fff;padding:12px 16px;border-radius:8px;
+  background:linear-gradient(120deg,#06112b,#0b234d);color:#fff;padding:10px 14px;border-radius:8px;
   border:1px solid rgba(0,229,255,.35);box-shadow:0 4px 16px rgba(0,0,0,.3)}
-.sw-title{font-size:16px;font-weight:700;letter-spacing:.4px;color:#fff;text-shadow:0 0 10px rgba(0,229,255,.5)}
-.sw-subtitle{font-size:11.5px;color:#a8c4ea;margin-top:2px}
-.sw-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:12px}
-.sw-card{padding:14px 16px;border-radius:8px;border-top:3px solid #00e5ff}
+.sw-title{font-size:15px;font-weight:700;letter-spacing:.3px;color:#fff;text-shadow:0 0 10px rgba(0,229,255,.5)}
+.sw-subtitle{font-size:11px;color:#a8c4ea;margin-top:2px}
+.sw-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:10px}
+.sw-card{padding:12px 14px;border-radius:8px;border-top:3px solid #00e5ff}
 .sw-c1{border-top-color:#00e5ff}
 .sw-c2{border-top-color:#28c76f}
 .sw-c3{border-top-color:#7b95ff}
-.sw-clb{font-size:11px;font-weight:700;color:var(--mu);letter-spacing:.4px;text-transform:uppercase}
-.sw-big{font-size:26px;font-weight:700;color:var(--st);margin:6px 0 8px;line-height:1.15}
-.sw-big small{font-size:16px;font-weight:600}
-.sw-cmeta{display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--mu);border-top:1px solid var(--ln);padding-top:7px}
+.sw-clb{font-size:11px;font-weight:700;color:var(--mu);letter-spacing:.3px;text-transform:uppercase}
+.sw-big{font-size:24px;font-weight:700;color:var(--st);margin:5px 0 7px;line-height:1.15}
+.sw-big small{font-size:15px;font-weight:600}
+.sw-cmeta{display:flex;flex-direction:column;gap:3px;font-size:11.5px;color:var(--mu);border-top:1px solid var(--ln);padding-top:6px}
 .sw-cmeta b{color:var(--st)}
 /* шкала безубытка */
-.sw-be{padding:14px 16px;border-radius:8px;border-left:4px solid #28c76f}
+.sw-be{padding:12px 14px;border-radius:8px;border-left:4px solid #28c76f}
 .sw-be-top{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
-.sw-be-title{font-weight:700;font-size:13px;color:var(--st);letter-spacing:.3px}
-.sw-be-pct{font-size:14px;color:var(--tx)}
-.sw-be-pct b{color:var(--green);font-size:16px}
-.sw-be-nums{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr));gap:8px;margin:10px 0;
-  background:var(--swbox);border:1px solid var(--swbd);border-radius:6px;padding:10px 12px;font-size:12.5px}
-.sw-be-nums span{color:var(--mu);display:block;font-size:11px}
-.sw-be-nums b{font-size:16px;color:var(--st)}
-.sw-pbar{height:12px;background:var(--ln2);border-radius:6px;overflow:hidden;box-shadow:inset 0 1px 3px rgba(0,0,0,.25)}
+.sw-be-title{font-weight:700;font-size:12.5px;color:var(--st);letter-spacing:.2px}
+.sw-be-pct{font-size:13px;color:var(--tx)}
+.sw-be-pct b{color:var(--green);font-size:15px}
+.sw-be-nums{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,200px),1fr));gap:6px;margin:8px 0;
+  background:var(--swbox);border:1px solid var(--swbd);border-radius:6px;padding:8px 10px;font-size:12px}
+.sw-be-nums span{color:var(--mu);display:block;font-size:10.5px}
+.sw-be-nums b{font-size:15px;color:var(--st)}
+.sw-pbar{height:11px;background:var(--ln2);border-radius:6px;overflow:hidden;box-shadow:inset 0 1px 3px rgba(0,0,0,.25)}
 .sw-pfill{height:100%;background:linear-gradient(90deg,#28c76f,#00e5ff);border-radius:6px;box-shadow:0 0 10px rgba(0,229,255,.6);transition:width .4s}
-.sw-be-forecast{margin-top:8px;font-size:12.5px;color:var(--tx)}
-/* таблица Матрица Роя */
-.sw-tcard{padding:0;border-radius:8px;overflow:hidden}
-.sw-thdr{padding:12px 16px;font-weight:700;font-size:13.5px;color:var(--st);border-bottom:1px solid var(--ln)}
-.sw-tscroll{overflow-x:auto}
-.sw-tbl{width:100%;border-collapse:collapse;min-width:580px}
-.sw-tbl th{background:var(--th);color:#fff;font-weight:600;font-size:12px;text-align:right;padding:10px 12px;white-space:nowrap}
-.sw-tbl th:first-child{text-align:left;padding-left:16px}
-.sw-tbl td{padding:10px 12px;text-align:right;border-bottom:1px solid var(--ln);vertical-align:middle}
-.sw-tbl td:first-child{text-align:left;padding-left:16px}
-.sw-tbl tfoot td{background:var(--swbox);border-top:2px solid var(--ln2);border-bottom:0;padding:11px 12px;font-size:13.5px}
-.sw-tbl tfoot td:first-child{padding-left:16px}
-.sw-nm{display:flex;align-items:center;gap:4px}
-.sw-ed{display:inline-block;margin-left:6px;font-size:12px}
-.sw-m{font-weight:700;font-size:14px;color:var(--st);white-space:nowrap}
-.sw-sub{font-size:11px;color:var(--mu);margin-top:2px;white-space:nowrap}
-.sw-foot{padding:9px 16px;font-size:11px;color:var(--mu);border-top:1px solid var(--ln)}
+.sw-be-forecast{margin-top:7px;font-size:12px;color:var(--tx)}
+/* компактная таблица Матрица Роя под экран телефона */
+.sw-tcard{padding:0;border-radius:8px;overflow:hidden;max-width:680px}
+.sw-thdr{padding:10px 12px;font-weight:700;font-size:13px;color:var(--st);border-bottom:1px solid var(--ln)}
+.sw-tbl{width:100%;border-collapse:collapse;table-layout:fixed}
+.sw-tbl th{background:var(--th);color:#fff;font-weight:600;font-size:11.5px;text-align:right;padding:8px 6px;white-space:nowrap}
+.sw-tbl th:first-child{text-align:left;padding-left:10px;width:34%}
+.sw-tbl th:nth-child(2),.sw-tbl th:nth-child(3){width:20%}
+.sw-tbl th:last-child{padding-right:10px;width:26%}
+.sw-tbl td{padding:8px 6px;text-align:right;border-bottom:1px solid var(--ln);vertical-align:middle;font-weight:600;font-size:12.5px}
+.sw-tbl td:first-child{text-align:left;padding-left:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sw-tbl td:last-child{padding-right:10px}
+.sw-tbl tfoot td{background:var(--swbox);border-top:2px solid var(--ln2);border-bottom:0;padding:9px 6px;font-size:12.5px}
+.sw-tbl tfoot td:first-child{padding-left:10px}
+.sw-tbl tfoot td:last-child{padding-right:10px}
+.sw-m{font-weight:700;font-size:13px;color:var(--st);white-space:nowrap;line-height:1.15}
+.sw-sub{font-size:10.5px;color:var(--mu);margin-top:1px;white-space:nowrap;line-height:1.1}
 /* простой: компактная строка */
 .sc{flex-direction:row;align-items:center;gap:10px;padding:6px 22px 6px 12px;min-height:48px}
 .sc .c1{flex:1;min-width:0}
@@ -1229,7 +1232,12 @@ body.gm .gbox .card{opacity:.55}
   .tiles{margin-top:6px}
   .foot{padding-top:6px}
   .logo{right:auto;left:50%;transform:translate(-50%,-50%);height:135%}
-  .sw-big{font-size:22px}
+  .sw-big{font-size:21px}
+  .sw-tbl th{font-size:11px;padding:7px 4px}
+  .sw-tbl td{font-size:12px;padding:7px 4px}
+  .sw-tbl td .name{font-size:12px}
+  .sw-m{font-size:12px}
+  .sw-sub{font-size:10px}
 }
 @media(max-width:560px){
   h1{font-size:20px}
@@ -1241,9 +1249,8 @@ body.gm .gbox .card{opacity:.55}
     <div class="hl">
       <h1><svg viewBox="0 0 24 24"><path d="M12 12a5 5 0 1 0 0-10 5 5 0 0 0 0 10zm0 2c-4 0-8 2-8 5v3h16v-3c0-3-4-5-8-5z"/></svg><span id="ttl" title="Нажмите, чтобы переименовать">__TITLE__</span></h1>
       <div class="dd"><button class="ddbtn" id="ddb">Расширенный</button>
-        <button class="ddbtn plain swbtn" id="swb" title="Свайп влево/вправо или нажмите для открытия Матрицы Роя">🐝 Матрица Роя</button>
         <button class="ddbtn plain" id="gm" title="Объединить два счёта рядом">Группы</button>
-        <div class="ddm" id="ddm"><a data-v="pro">Расширенный</a><a data-v="swarm">🐝 Матрица Роя</a><a data-v="income">Доходы</a><a data-v="simple">Простой</a><a data-v="summary">Сводка</a></div></div>
+        <div class="ddm" id="ddm"><a data-v="pro">Расширенный</a><a data-v="swarm">🐝 Матрица Роя</a><a data-v="swarm2">📊 Таблица Роя</a><a data-v="income">Доходы</a><a data-v="simple">Простой</a><a data-v="summary">Сводка</a></div></div>
     </div>
     <div class="hr">
       <button class="btn b-g" id="rf" title="Обновить"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7M21 3v6h-6"/></svg></button>
@@ -1281,7 +1288,7 @@ body.gm .gbox .card{opacity:.55}
 </div></div>
 <script>
 let VIEW="__VIEW__", CUR="__CUR__", EDIT=null, RATE=null, GM=false, SEL=[], DRAG=null;
-const NAMES={pro:'Расширенный',swarm:'🐝 Матрица Роя',income:'Доходы',simple:'Простой',summary:'Сводка'};
+const NAMES={pro:'Расширенный',swarm:'🐝 Матрица Роя',swarm2:'📊 Таблица Роя',income:'Доходы',simple:'Простой',summary:'Сводка'};
 const q=new URLSearchParams(location.search);
 const OKC=['ORIG','USD','RUB'];
 if(!q.get('cur')){const s=localStorage.getItem('fxcur');if(OKC.includes(s))CUR=s;}
@@ -1297,7 +1304,7 @@ $('th').onclick=()=>{
   try{localStorage.setItem('fxtheme',d?'dark':'light');}catch(e){}
 };
 
-/* ---- свайп влево/вправо на телефоне между Расширенным и Матрицей Роя ---- */
+/* ---- двойной свайп влево/вправо на телефоне: Расширенный <-> Матрица Роя <-> Таблица Роя ---- */
 let sx=0, sy=0;
 document.addEventListener('touchstart',e=>{
   if(!e.touches||e.touches.length!==1)return;
@@ -1305,17 +1312,19 @@ document.addEventListener('touchstart',e=>{
 },{passive:true});
 document.addEventListener('touchend',e=>{
   if(!sx||GM||DRAG||$('mdl').classList.contains('open'))return;
-  if(e.target&&e.target.closest&&e.target.closest('.sw-tscroll'))return;
   const dx=(e.changedTouches[0].clientX)-sx;
   const dy=(e.changedTouches[0].clientY)-sy;
   sx=0;sy=0;
-  if(Math.abs(dx)>85 && Math.abs(dx)>Math.abs(dy)*1.8){
-    if(dx<0 && VIEW!=='swarm') setView('swarm');
-    else if(dx>0 && VIEW==='swarm') setView('pro');
+  if(Math.abs(dx)>75 && Math.abs(dx)>Math.abs(dy)*1.7){
+    if(dx<0){
+      if(VIEW==='swarm') setView('swarm2');
+      else if(VIEW!=='swarm2') setView('swarm');
+    }else{
+      if(VIEW==='swarm2') setView('swarm');
+      else if(VIEW==='swarm') setView('pro');
+    }
   }
 },{passive:true});
-
-$('swb').onclick=()=>{setView(VIEW==='swarm'?'pro':'swarm');};
 
 /* ---- валюта ---- */
 function drawCur(){
@@ -1330,7 +1339,6 @@ function showRate(){
 async function loadRate(){try{RATE=await (await fetch('/api/rates',{cache:'no-store'})).json();showRate();}catch(e){}}
 function sync(){
   $('ddb').textContent=NAMES[VIEW]||NAMES.pro;
-  $('swb').classList.toggle('on',VIEW==='swarm');
   $('gm').style.display=VIEW==='pro'?'':'none';
   if(VIEW!=='pro'&&GM){GM=false;SEL=[];applySel();}
   const u=new URL(location);u.searchParams.set('view',VIEW);u.searchParams.set('cur',CUR);history.replaceState(null,'',u);
